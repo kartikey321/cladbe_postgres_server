@@ -363,19 +363,7 @@ export class UpdateDbRequest extends DbRequest {
     }
 }
  */
-export interface DbRequest {
-    tableName: string,
 
-}
-
-export interface FetchDbRequest extends DbRequest {
-
-    dataSort?: DataSort,
-    filters?: BaseSqlDataFilter[],
-    limit?: number,
-    offset?: number,
-
-}
 
 export interface BaseSqlDataFilter {
 }
@@ -391,12 +379,12 @@ export interface SqlDataFilter extends BaseSqlDataFilter {
     fieldName: string;
     value: any;
     filterType: SQLDataFilterType,
-    modifier: SqlFilterModifier;
+    modifier?: SqlFilterModifier;
 }
 
 
 export interface SqlFilterModifier {
     distinct?: boolean,
-    caseInSensitive: true,
+    caseInSensitive: boolean,
     nullsOrder: NullsSortOrder
 }

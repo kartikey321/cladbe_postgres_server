@@ -2,8 +2,8 @@ import {Hono} from 'hono';
 import {serve} from '@hono/node-server';
 import {logger} from 'hono/logger';
 import {cors} from 'hono/cors';
-import {FetchDbRequest} from "./models/filters/filters";
 import {PostgresManager} from "./helpers/postgress_manager";
+import {GetDataDbRequest} from "./models/requests";
 
 const app = new Hono();
 const postgresManager = PostgresManager.getInstance();
@@ -14,7 +14,7 @@ app.get('/', (c) => c.text('Hello, Hono with TypeScript and PM2!'));
 app.get('/api', (c) => c.json({message: 'Scalable Hono API'}));
 app.get('/health', (c) => c.json({status: 'ok'}));
 app.post('/get-data', async (c) => {
-    const data: FetchDbRequest = await c.req.json();
+    const data: GetDataDbRequest = await c.req.json().then((val) => GetDataDbRequest.fromMap(val));
 
     const resp = await postgresManager.getData(data);
     c.json({"data": resp});

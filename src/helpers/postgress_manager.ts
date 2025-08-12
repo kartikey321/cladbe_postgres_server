@@ -1,7 +1,7 @@
 import type {Knex} from "knex";
 import knex from "knex";
 import {QueryProcessor} from "./query_builder";
-import {FetchDbRequest} from "../models/filters/filters";
+import {FetchDbRequest} from "../models/requests";
 
 export class PostgresManager {
     private static instance: PostgresManager;

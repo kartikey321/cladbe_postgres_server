@@ -1,13 +1,20 @@
 import type {Knex} from "knex";
 import {
     BaseSqlDataFilter,
-    DbRequest,
-    FetchDbRequest,
+    NullsSortOrder,
     SqlDataFilter,
     SQLDataFilterType,
     SqlDataFilterWrapper,
     SQLFilterWrapperType
 } from "../models/filters/filters";
+import {
+    AddSingleDbRequest,
+    DbRequest,
+    FetchDbRequest,
+    GetDataDbRequest,
+    GetSingleRecordRequest,
+    UpdateSingleDbRequest
+} from "../models/requests";
 
 // ---- Type Guards ----
 function isWrapper(f: BaseSqlDataFilter): f is SqlDataFilterWrapper {
@@ -178,13 +185,12 @@ export class QueryProcessor {
     // Implementation signature (must be compatible with all overloads)
     public buildQuery<TRecord extends {}, TResult>(
         request: DbRequest | FetchDbRequest
-    ): Knex.QueryBuilder<TRecord, TResult | TResult[]> {
+    ): Knex.QueryBuilder<TRecord, any> {
         const safeTable = ensureValidColumn(request.tableName);
-        let query = this.knex<TRecord, TResult | TResult[]>(safeTable);
+        let query = this.knex<TRecord, any>(safeTable);
 
         // Type guard to check if it's a FetchDbRequest
-        if ('filters' in request || 'limit' in request || 'offset' in request) {
-
+        if (request instanceof GetDataDbRequest) {
             if (request.filters?.length) {
                 query = this.processFilters(query, request.filters);
             }
@@ -194,6 +200,30 @@ export class QueryProcessor {
             if (request.offset != null) {
                 query = query.offset(request.offset);
             }
+        } else if (request instanceof GetSingleRecordRequest) {
+            query = this.processFilters(query, [
+                {
+                    fieldName: request.primaryKeyColumn,
+                    value: request.primaryId,
+                    filterType: SQLDataFilterType.equals,
+                    modifier: {
+                        distinct: true,
+                        caseInSensitive: false,
+                        nullsOrder: NullsSortOrder.default_,
+                    }
+
+                } as SqlDataFilter
+            ]);
+        } else if (request instanceof AddSingleDbRequest) {
+            this.knex(safeTable).insert({
+                ...request.data,
+                [`${request.primaryKeyColumn}`]: request.data[request.primaryKeyColumn],
+            });
+        } else if (request instanceof UpdateSingleDbRequest) {
+            this.knex(safeTable).insert({
+                ...request.updates,
+                [`${request.primaryKeyColumn}`]: request.updates[request.primaryKeyColumn],
+            });
         }
 
         return query;
