@@ -98,7 +98,8 @@ export class UpdateSingleDbRequest extends EditDbRequest {
     constructor(
         public tableName: string,
         public updates: Record<string, any>,
-        public primaryKeyColumn: string
+        public primaryKeyColumn: string,
+        public primaryId: string
     ) {
         super(tableName);
     }
@@ -111,7 +112,8 @@ export class UpdateSingleDbRequest extends EditDbRequest {
         return {
             tableName: this.tableName,
             updates: this.updates,
-            primaryKeyColumn: this.primaryKeyColumn
+            primaryKeyColumn: this.primaryKeyColumn,
+            primaryId: this.primaryId
         };
     }
 
@@ -119,7 +121,8 @@ export class UpdateSingleDbRequest extends EditDbRequest {
         return new UpdateSingleDbRequest(
             obj.tableName,
             obj.updates,
-            obj.primaryKeyColumn
+            obj.primaryKeyColumn,
+            obj.primaryId
         );
     }
 }

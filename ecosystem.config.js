@@ -1,13 +1,13 @@
 module.exports = {
     apps: [
         {
-            name: 'hono-ts-backend',
+            name: 'cladbe_postgres_server',
             script: './dist/index.js',
             instances: 1, // Start with 1 instance to minimize resource use
             exec_mode: 'cluster',
             env: {
                 NODE_ENV: 'production',
-                PORT: 3000,
+                PORT: 7500,
             },
             wait_ready: true,
             listen_timeout: 10000,

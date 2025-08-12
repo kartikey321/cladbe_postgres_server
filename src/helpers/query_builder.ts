@@ -215,15 +215,15 @@ export class QueryProcessor {
                 } as SqlDataFilter
             ]);
         } else if (request instanceof AddSingleDbRequest) {
-            this.knex(safeTable).insert({
+           query= this.knex(safeTable).insert({
                 ...request.data,
                 [`${request.primaryKeyColumn}`]: request.data[request.primaryKeyColumn],
             });
         } else if (request instanceof UpdateSingleDbRequest) {
-            this.knex(safeTable).insert({
-                ...request.updates,
-                [`${request.primaryKeyColumn}`]: request.updates[request.primaryKeyColumn],
-            });
+          query=  this.knex(safeTable).where({  [`${request.primaryKeyColumn}`]: request.primaryId}).update(
+             request.updates
+
+            );
         }
 
         return query;
