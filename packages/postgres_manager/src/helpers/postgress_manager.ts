@@ -1,8 +1,9 @@
 import type {Knex} from "knex";
 import knex from "knex";
 import {QueryProcessor} from "./query_builder";
-import {EditDbRequest, FetchDbRequest, GetDataDbRequest} from "../models/requests";
+import {CreateTableDbRequest, EditDbRequest, FetchDbRequest, GetDataDbRequest} from "../models/requests";
 import dotenv from 'dotenv';
+
 export class PostgresManager {
     private static instance: PostgresManager;
     public knex: Knex;
@@ -19,7 +20,7 @@ export class PostgresManager {
                 password: process.env.PGPASSWORD,
                 database: process.env.PGDATABASE,
                 port: Number(process.env.PGPORT),
-                debug:true,
+                debug: true,
 
             }
         });
@@ -36,14 +37,20 @@ export class PostgresManager {
     async getData(request: FetchDbRequest) {
         let query = this.queryProcessor.buildQuery(request);
         console.log(query.toQuery());
-        return request instanceof GetDataDbRequest ?query.select('*'):query.select('*').first();
+        return request instanceof GetDataDbRequest ? query.select('*') : query.select('*').first();
     }
 
 
     async editData(request: EditDbRequest) {
         let query = this.queryProcessor.buildQuery(request);
         console.log(query.toQuery());
-return query.returning('*');
+        return query.returning('*');
+    }
+
+    async createTable(request: CreateTableDbRequest) {
+        let query = this.queryProcessor.buildSchemaModifierQuery(request);
+        console.log(query.toQuery());
+        return query;
     }
 
 }

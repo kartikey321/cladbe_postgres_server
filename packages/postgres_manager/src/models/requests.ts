@@ -1,4 +1,5 @@
 import {BaseSqlDataFilter, DataSort} from "./filters/filters";
+import {TableDefinition} from "./table_definition";
 
 export abstract class DbRequest {
     constructor(public tableName: string) {
@@ -9,8 +10,33 @@ export abstract class DbRequest {
     abstract toMap(): Record<string, any>;
 }
 
+export abstract class SchemaModifierRequest {
+    protected constructor(public tableName: string) {
+    }
+
+}
+
 export class DbResponse {
 }
+
+export class CreateTableDbRequest extends SchemaModifierRequest {
+    getRequestName(): keyof RequestResponseMap {
+        return 'CreateTableRequest';
+    }
+
+    toMap(): Record<string, any> {
+        return this.tableDefinition.toMap();
+    }
+
+    public tableDefinition: TableDefinition;
+
+    constructor(table: Record<string, any>) {
+        super(table.name);
+        this.tableDefinition = TableDefinition.fromMap(table);
+
+    }
+}
+
 
 export abstract class FetchDbRequest extends DbRequest {
 
@@ -167,6 +193,7 @@ interface RequestResponseMap {
     GetSingleRecordRequest: DbResponse;
     UpdateSingleDbRequest: DbResponse;
     AddSingleDbRequest: DbResponse;
+    CreateTableRequest: DbResponse;
 }
 
 export type ResponseForName<N extends keyof RequestResponseMap> =

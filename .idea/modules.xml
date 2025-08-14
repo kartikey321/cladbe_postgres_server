@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/cladbe_postgress.iml" filepath="$PROJECT_DIR$/.idea/cladbe_postgress.iml" />
+      <module fileurl="file://$PROJECT_DIR$/.idea/cladbe_postgres_server.iml" filepath="$PROJECT_DIR$/.idea/cladbe_postgres_server.iml" />
     </modules>
   </component>
 </project>
