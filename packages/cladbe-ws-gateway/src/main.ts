@@ -1,3 +1,4 @@
+// src/main.ts
 import uWS from "uWebSockets.js";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
@@ -11,8 +12,8 @@ const MAX_QUEUE = 1000; // frames per connection
 
 // Kafka config (filtered CDC fan-out)
 const KAFKA_BROKERS = process.env.KAFKA_BROKERS || "localhost:9092";
-const KAFKA_GROUP   = process.env.KAFKA_GROUP   || "cladbe-ws-gateway";
-const KAFKA_TOPICS  = (process.env.KAFKA_TOPICS || "server.cdc.filtered").split(",");
+const KAFKA_GROUP = process.env.KAFKA_GROUP || "cladbe-ws-gateway";
+const KAFKA_TOPICS = (process.env.KAFKA_TOPICS || "server.cdc.filtered").split(",");
 
 // ---------------- LSN support (headers-only; no payload decoding) ----------------
 type SubState = {
@@ -27,10 +28,10 @@ let LAST_SEEN_LSN: bigint = 0n;
 function readLsnHeader(raw: any): bigint {
     const hs: Array<{ key: string; value: any; }> | undefined = (raw as any).headers;
     if (!hs || !Array.isArray(hs)) return 0n;
-    const h = hs.find(x => x && x.key === 'lsn');
+    const h = hs.find(x => x && x.key === "lsn");
     if (!h || !h.value) return 0n;
     const v = h.value as Buffer | string;
-    const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'binary');
+    const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), "binary");
     if (buf.length !== 8) return 0n;
     return buf.readBigUInt64BE(0);
 }
@@ -60,19 +61,20 @@ function parseSubprotocol(req: uWS.HttpRequest) {
 
 // --- minimal auth stub ---
 function authenticate(req: uWS.HttpRequest) {
-    const { chosen, token, rawProto } = parseSubprotocol(req);
+    const { chosen, token } = parseSubprotocol(req);
 
     // Keep tenant/user plumbing, fall back safely
     const tenantId = req.getHeader("x-tenant") || "demo";
-    const userId   = req.getHeader("x-user") || (token ?? "anon");
+    const userId = req.getHeader("x-user") || (token ?? "anon");
 
     // Auth “shape” stays intact; allow empty/missing token for now
     const isAuthenticated = token !== undefined && token.length > 0;
 
     // TODO: when ready, verify token here and set ok=false on failure
-    return { ok: true, userId, tenantId, chosen, rawProto, isAuthenticated };
+    return { ok: true, userId, tenantId, chosen, isAuthenticated };
 }
 
+// ---------------- Existing op-based send (JSON) ----------------
 function safeSend(s: uWS.WebSocket<any>, msg: ServerMsg) {
     const buf = JSON.stringify(msg);
     const st = sessions.get((s as any).id);
@@ -91,7 +93,29 @@ function safeSend(s: uWS.WebSocket<any>, msg: ServerMsg) {
     }
 }
 
-// LSN-aware delivery: buffer during snapshot, gate after by cursor
+// ---------------- NEW: generic features (type-based protocol) ----------------
+const connections = new Map<string, {
+    id: string;
+    socket: uWS.WebSocket<any>;
+    userId?: string;
+}>();
+
+function safeSendGeneric(ws: uWS.WebSocket<any>, payload: any) {
+    try {
+        ws.send(JSON.stringify({ ...payload, timestamp: Date.now() }));
+    } catch { /* ignore */ }
+}
+
+function broadcastAll(payload: any, excludeId?: string) {
+    for (const [id, c] of connections) {
+        if (excludeId && id === excludeId) continue;
+        try {
+            c.socket.send(JSON.stringify({ ...payload, timestamp: Date.now() }));
+        } catch { /* ignore */ }
+    }
+}
+
+// ---------------- LSN-aware delivery ----------------
 function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, onlySession?: any) {
     const targetSessions = onlySession ? [onlySession] : [...sessions.values()];
     let delivered = 0;
@@ -131,6 +155,7 @@ function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, onlySess
     return delivered;
 }
 
+// ---------------- Message schemas ----------------
 const subscribeSchema = z.object({
     op: z.literal("subscribe"),
     table: z.string().min(1),
@@ -145,33 +170,53 @@ const unsubscribeSchema = z.object({
     hashId: z.string().min(1)
 });
 
+// ---------------- uWebSockets App ----------------
 uWS.App({})
+    // .ws("/*", {
+    //     idleTimeout: 60,
+    //     maxBackpressure: 1 << 20, // 1 MiB per socket
+    //     maxPayloadLength: 1 << 20,
+
+    //     upgrade: (res, req, context) => {
+    //         const userId = req.getHeader("x-user-id") || "anonymous";
+
+    //         res.upgrade(
+    //             { userId }, // user data
+    //             req.getHeader("sec-websocket-key"),
+    //             req.getHeader("sec-websocket-protocol"),
+    //             req.getHeader("sec-websocket-extensions"),
+    //             context
+    //         );
+    //     },
     .ws("/*", {
         idleTimeout: 60,
-        maxBackpressure: 1 << 20, // 1 MiB per socket
+        maxBackpressure: 1 << 20,
         maxPayloadLength: 1 << 20,
 
         upgrade: (res, req, context) => {
-            const auth = authenticate(req);
+            console.log("[upgrade] Incoming upgrade request from", req.getUrl());
+            try {
+                const userId = req.getHeader("x-user-id") || "anonymous";
 
-            // For now we always allow, even with empty/no token
-            if (auth.chosen) {
-                // Echo only if a subprotocol was actually sent by the client
-                res.writeHeader("Sec-WebSocket-Protocol", auth.chosen);
+                res.upgrade(
+                    { userId },
+                    req.getHeader("sec-websocket-key"),
+                    req.getHeader("sec-websocket-protocol"),
+                    req.getHeader("sec-websocket-extensions"),
+                    context
+                );
+                console.log("[upgrade] Upgrade success for user:", userId);
+            } catch (err) {
+                console.error("[upgrade] Upgrade failed:", err);
+                res.writeStatus("400 Bad Request").end("Upgrade failed");
             }
-
-            res.upgrade(
-                { userId: auth.userId, tenantId: auth.tenantId, isAuthenticated: auth.isAuthenticated },
-                req.getHeader("sec-websocket-key"),
-                req.getHeader("sec-websocket-protocol"),   // pass through as sent (may be empty)
-                req.getHeader("sec-websocket-extensions"),
-                context
-            );
         },
 
         open: (ws) => {
             const id = randomUUID();
             (ws as any).id = id;
+            console.log(`[open] Client connected: ${id}`);
+
             const s = {
                 id,
                 socket: ws,
@@ -179,31 +224,83 @@ uWS.App({})
                 tenantId: (ws as any).tenantId,
                 subs: new Set<string>(),
                 sendQueue: [] as string[],
+                subStates: new Map<string, SubState>(),
             } as any;
-
-            // NEW: per-session subscription state (hashId/table-key -> SubState)
-            s.subStates = new Map<string, SubState>();
 
             sessions.set(id, s);
 
+            // --- NEW: add to generic connections map & say hello ---
+            connections.set(id, { id, socket: ws, userId: s.userId });
+            safeSendGeneric(ws, {
+                type: "welcome",
+                data: { connectionId: id, connectedClients: connections.size }
+            });
+            broadcastAll({ type: "user_joined", data: { userId: s.userId, connectionId: id } }, id);
+
             // heartbeat
-            const interval = setInterval(() => {
-                try { ws.ping(); } catch { /* ignore */ }
-            }, PING_INTERVAL_MS);
+            const interval = setInterval(() => { try { ws.ping(); } catch { /* ignore */ } }, PING_INTERVAL_MS);
             (ws as any)._heartbeat = interval;
         },
 
         message: (ws, arrayBuffer, isBinary) => {
-            if (isBinary) return; // client should send JSON
-            let msg: ClientMsg;
-            try {
-                msg = JSON.parse(Buffer.from(arrayBuffer).toString("utf8"));
-            } catch {
-                safeSend(ws, { op: "error", code: "bad_json", message: "invalid JSON" });
+            const id = (ws as any).id;
+
+            if (isBinary) {
+                console.log(`[message] Received binary message from ${id}`);
                 return;
             }
 
-            if (msg.op === "ping") { safeSend(ws, { op: "pong" }); return; }
+            let raw: any;
+            try {
+                raw = JSON.parse(Buffer.from(arrayBuffer).toString("utf8"));
+                const text = Buffer.from(arrayBuffer).toString("utf8");
+                console.log(`[message] Raw text from ${id}:`, text);
+                const msg = JSON.parse(text);
+                console.log(`[message] Parsed JSON from ${id}:`, msg);
+
+            } catch {
+                safeSendGeneric(ws, { type: "error", data: { message: "Invalid JSON message" } });
+                return;
+            }
+
+            // --- NEW: support the simple "type" protocol (coexists with op-based) ---
+            if (raw && typeof raw.type === "string") {
+                const s = sessions.get((ws as any).id);
+                switch (raw.type) {
+                    case "ping":
+                        safeSendGeneric(ws, { type: "pong" });
+                        return;
+
+                    case "echo":
+                        safeSendGeneric(ws, { type: "echo_response", data: raw.data });
+                        return;
+
+                    case "broadcast":
+                        broadcastAll({
+                            type: "broadcast_message",
+                            data: { from: s?.userId, message: raw.data }
+                        });
+                        return;
+
+                    case "get_status":
+                        safeSendGeneric(ws, {
+                            type: "status",
+                            data: {
+                                connectedClients: connections.size,
+                                sessions: sessions.size,
+                                uptime: process.uptime(),
+                                slowSockets: SLOW_SOCKETS
+                            }
+                        });
+                        return;
+                }
+                // fallthrough to op-based handling if unknown "type"
+            }
+
+            // --- EXISTING op-based protocol ---
+            let msg: ClientMsg = raw;
+
+            if ((msg as any).op === "ping") { safeSend(ws, { op: "pong" } as any); return; }
 
             // subscribe (LSN-fenced)
             if (subscribeSchema.safeParse(msg).success) {
@@ -214,11 +311,11 @@ uWS.App({})
                 // TODO(tenant safety): enforce tenant predicate injection up-front.
 
                 addSub(s, key);
-                safeSend(ws, { op: "ack", hashId });
+                safeSend(ws, { op: "ack", hashId } as any);
 
                 // 1) Fence at current global LSN (or client's resume if higher)
                 let fence = LAST_SEEN_LSN;
-                if (typeof resumeFromVersion === 'number' && Number.isFinite(resumeFromVersion)) {
+                if (typeof resumeFromVersion === "number" && Number.isFinite(resumeFromVersion)) {
                     const r = BigInt(resumeFromVersion);
                     if (r > fence) fence = r;
                 }
@@ -234,7 +331,7 @@ uWS.App({})
                     version: 0,
                     cursor: { lsn: fence.toString() },
                     rows: snapshotRows
-                });
+                } as any);
 
                 // 4) Flush buffered diffs strictly newer than fence
                 const sub = (s as any).subStates.get(key) as SubState;
@@ -262,10 +359,13 @@ uWS.App({})
                 return;
             }
 
-            safeSend(ws, { op: "error", code: "bad_op", message: "unknown message" });
+            safeSend(ws, { op: "error", code: "bad_op", message: "unknown message" } as any);
         },
 
         drain: (ws) => {
+            console.log(`[drain] Backpressure relieved for ${(ws as any).id}`);
+
+
             const s = sessions.get((ws as any).id);
             if (!s) return;
 
@@ -281,22 +381,80 @@ uWS.App({})
                 if (!ok) { s.sendQueue.unshift(next); break; }
             }
         },
+        pong: (ws) => {
+            console.log(`[pong] Pong received from ${(ws as any).id}`);
+        },
 
-        close: (ws) => {
+        close: (ws, code, message) => {
+            const id = (ws as any).id;
+            console.log(`[close] Connection closing: id=${id}, code=${code}, reason=${Buffer.from(message).toString()}`);
+
             clearInterval((ws as any)._heartbeat);
-            const s = sessions.get((ws as any).id);
+
+            const s = sessions.get(id);
             if (s) {
-                for (const key of [...s.subs]) removeSub(s, key);
-                (s as any).subStates?.clear?.();
-                if ((s as any)._slow) { (s as any)._slow = false; if (SLOW_SOCKETS > 0) SLOW_SOCKETS--; }
+                console.log(`[close] Cleaning up session for ${id}, userId=${s.userId}`);
+
+                // Remove all subs
+                for (const key of [...s.subs]) {
+                    console.log(`[close] Removing subscription ${key} for session ${id}`);
+                    removeSub(s, key);
+                }
+
+                // Clear subStates
+                if ((s as any).subStates) {
+                    (s as any).subStates.clear?.();
+                    console.log(`[close] Cleared subStates for ${id}`);
+                }
+
+                // Handle slow sockets counter
+                if ((s as any)._slow) {
+                    (s as any)._slow = false;
+                    if (SLOW_SOCKETS > 0) {
+                        SLOW_SOCKETS--;
+                        console.log(`[close] Decremented slow socket counter: now ${SLOW_SOCKETS}`);
+                    }
+                }
+
                 sessions.delete(s.id);
+                console.log(`[close] Removed session ${id} from sessions map`);
+
+                // --- Remove from connection registry & notify others ---
+                if (connections.has(s.id)) {
+                    connections.delete(s.id);
+                    console.log(`[close] Removed connection ${id} from connections map`);
+                    broadcastAll({
+                        type: "user_left",
+                        data: { userId: s.userId, connectionId: s.id }
+                    });
+                    console.log(`[close] Broadcasted user_left for ${id}, userId=${s.userId}`);
+                }
+            } else {
+                console.log(`[close] No session found for ${id}, nothing to clean up`);
             }
         }
     })
+
+    // --- NEW: health endpoint ---
+    .get("/health", (res, _req) => {
+        res.writeHeader("Content-Type", "application/json");
+        res.end(JSON.stringify({
+            status: "healthy",
+            connections: connections.size,
+            sessions: sessions.size,
+            uptime: process.uptime(),
+            slowSockets: SLOW_SOCKETS
+        }));
+    })
+
+    // Default route
     .any("/*", (res, _req) => void res.writeStatus("200 OK").end("cladbe-ws-gateway"))
+
+    // Start server
     .listen(PORT, (ok) => {
         if (!ok) { console.error("WS listen failed"); process.exit(1); }
         console.log(`WS listening on :${PORT}`);
+        console.log(`Health check: http://localhost:${PORT}/health`);
     });
 
 // ---- Kafka consumer → fan-out ----

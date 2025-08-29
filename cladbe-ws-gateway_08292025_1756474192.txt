@@ -1,0 +1,541 @@
+Project Overview
+===============
+
+Project Statistics:
+Total Files: 8
+Total Size: 16.65 KB
+
+File Types:
+  .ts: 5 files
+  .json: 2 files
+  no extension: 1 files
+
+Detected Technologies:
+  - TypeScript
+
+Folder Structure (Tree)
+=====================
+Legend: ✓ = Included in output, ✗ = Excluded from output
+
+├── .gitignore (36 B) ✓
+├── package.json (461 B) ✓
+├── src/
+│   ├── kafka.ts (2.42 KB) ✓
+│   ├── main.ts (10.92 KB) ✓
+│   ├── state.ts (899 B) ✓
+│   ├── types-ext.d.ts (1.02 KB) ✓
+│   └── types.ts (746 B) ✓
+└── tsconfig.json (202 B) ✓
+
+==============
+
+File Name: .gitignore
+Size: 36 B
+Code:
+node_modules
+package-lock.json
+dist
+
+-------- [ Separator ] ------
+
+File Name: package.json
+Size: 461 B
+Code:
+{
+  "name": "cladbe-ws-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "node-rdkafka": "^2.18.0",
+    "uuid": "^9.0.1",
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/kafka.ts
+Size: 2.42 KB
+Code:
+// src/kafka.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import pkg from 'node-rdkafka';
+const { KafkaConsumer } = pkg;
+import type { LibrdKafkaError, Message } from 'node-rdkafka';
+
+export type KafkaHandlers = {
+    onMessage: (key: string, value: Buffer, raw: Message) => void;
+    onError?: (err: LibrdKafkaError) => void;
+    onRebalance?: (ev: any) => void;
+};
+
+export class GatewayConsumer {
+    private consumer: any; // KafkaConsumer type
+    private paused = false;
+
+    constructor(
+        private topics: string[],
+        private groupId: string,
+        private brokers: string,
+        private handlers: KafkaHandlers,
+    ) {
+        this.consumer = new KafkaConsumer(
+            {
+                'metadata.broker.list': brokers,
+                'group.id': groupId,
+                'enable.auto.commit': true,
+                'socket.keepalive.enable': true,
+                // throughput tuning
+                'fetch.wait.max.ms': 50,
+                'fetch.min.bytes': 65536,              // 64 KiB
+                'queued.max.messages.kbytes': 102400,  // 100 MiB
+                'allow.auto.create.topics': true,
+                'client.id': 'cladbe-ws-gateway',
+            },
+            { 'auto.offset.reset': 'latest' }
+        );
+    }
+
+    start() {
+        this.consumer
+            .on('ready', () => {
+                this.consumer.subscribe(this.topics);
+                this.consumer.consume();
+            })
+            .on('data', (m: Message) => {
+                const key = m.key
+                    ? (Buffer.isBuffer(m.key) ? m.key.toString('utf8') : String(m.key))
+                    : '';
+                if (!key || !m.value) return;
+                this.handlers.onMessage(key, m.value, m);
+            })
+            .on('event.error', (err: LibrdKafkaError) => this.handlers.onError?.(err))
+            .on('rebalance', (ev: any) => this.handlers.onRebalance?.(ev));
+
+        this.consumer.connect();
+    }
+
+    pauseAll() {
+        if (this.paused) return;
+        const asg = this.consumer.assignments();
+        if (asg.length) {
+            this.consumer.pause(asg);
+            this.paused = true;
+        }
+    }
+
+    resumeAll() {
+        if (!this.paused) return;
+        const asg = this.consumer.assignments();
+        if (asg.length) {
+            this.consumer.resume(asg);
+            this.paused = false;
+        }
+    }
+
+    stop() {
+        try { this.consumer.disconnect(); } catch {}
+    }
+}
+-------- [ Separator ] ------
+
+File Name: src/main.ts
+Size: 10.92 KB
+Code:
+import uWS from "uWebSockets.js";
+import { randomUUID } from "node:crypto";
+import { z } from "zod";
+import { sessions, addSub, removeSub, subToSessions } from "./state.js";
+import { type ClientMsg, type ServerMsg, subKey } from "./types.js";
+import { GatewayConsumer } from "./kafka.js";
+
+const PORT = Number(process.env.WS_PORT || 7000);
+const PING_INTERVAL_MS = 25_000;
+const MAX_QUEUE = 1000; // frames per connection
+
+// Kafka config
+const KAFKA_BROKERS = process.env.KAFKA_BROKERS || "localhost:9092";
+const KAFKA_GROUP = process.env.KAFKA_GROUP || "cladbe-ws-gateway";
+const KAFKA_TOPICS = (process.env.KAFKA_TOPICS || "server.cdc.filtered").split(",");
+
+// ---------------- LSN support ----------------
+type SubState = {
+    cursorLsn: bigint;
+    buffering: boolean;
+    buffer: Array<{ lsn: bigint; payload: Buffer }>;
+};
+
+let LAST_SEEN_LSN: bigint = 0n;
+
+function readLsnHeader(raw: any): bigint {
+    const hs: Array<{ key: string; value: any; }> | undefined = (raw as any).headers;
+    if (!hs || !Array.isArray(hs)) return 0n;
+    const h = hs.find(x => x && x.key === 'lsn');
+    if (!h || !h.value) return 0n;
+    const v = h.value as Buffer | string;
+    const buf = Buffer.isBuffer(v) ? v : Buffer.from(String(v), 'binary');
+    if (buf.length !== 8) return 0n;
+    return buf.readBigUInt64BE(0);
+}
+
+// ---------------- helpers ----------------
+let SLOW_SOCKETS = 0;
+
+function asArrayBuffer(buf: Buffer): ArrayBuffer {
+    return buf.buffer.slice(buf.byteOffset, buf.byteOffset + buf.byteLength) as ArrayBuffer;
+}
+
+function parseSubprotocol(req: uWS.HttpRequest) {
+    const raw = req.getHeader("sec-websocket-protocol") || "";
+    const parts = raw.split(",").map(s => s.trim()).filter(Boolean);
+    const chosen = parts.length ? parts[0] : undefined;
+    const bearerPart = parts.find(p => p.startsWith("bearer."));
+    const token = bearerPart !== undefined ? bearerPart.slice("bearer.".length) : undefined;
+    return { chosen, token, rawProto: raw };
+}
+
+function authenticate(req: uWS.HttpRequest) {
+    const { chosen, token, rawProto } = parseSubprotocol(req);
+    const tenantId = req.getHeader("x-tenant") || "demo";
+    const userId = req.getHeader("x-user") || (token ?? "anon");
+    const isAuthenticated = token !== undefined && token.length > 0;
+    return { ok: true, userId, tenantId, chosen, rawProto, isAuthenticated };
+}
+
+function safeSend(s: uWS.WebSocket<any>, msg: ServerMsg) {
+    const buf = JSON.stringify(msg);
+    const st = sessions.get((s as any).id);
+    if (!st) return;
+    const wrote = s.send(buf);
+    if (wrote) return;
+    (st as any).sendQueue.push(buf);
+    if (!(st as any)._slow) { (st as any)._slow = true; SLOW_SOCKETS++; }
+    if ((st as any).sendQueue.length > MAX_QUEUE) {
+        (st as any).sendQueue.length = 0;
+        s.send(JSON.stringify({ op: "error", code: "overflow", message: "reset-to-snapshot" }));
+    }
+}
+
+function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, onlySession?: any) {
+    const targetSessions = onlySession ? [onlySession] : [...sessions.values()];
+    let delivered = 0;
+    for (const st of targetSessions) {
+        for (const key of st.subs) {
+            if (!key.endsWith(hashId)) continue;
+            const subStates: Map<string, SubState> = st.subStates ?? new Map();
+            const sub = subStates.get(key);
+            if (!sub) continue;
+            if (sub.buffering) {
+                sub.buffer.push({ lsn, payload });
+                continue;
+            }
+            if (lsn <= sub.cursorLsn) continue;
+            const ok = st.socket.send(asArrayBuffer(payload), true, false);
+            if (ok) {
+                sub.cursorLsn = lsn;
+                delivered++;
+            } else {
+                const b64 = payload.toString("base64");
+                st.sendQueue.push(JSON.stringify({ op: "diffB64", hashId, b64 }));
+                if (!st._slow) { st._slow = true; SLOW_SOCKETS++; }
+                if (st.sendQueue.length > MAX_QUEUE) {
+                    st.sendQueue.length = 0;
+                    st.socket.send(JSON.stringify({ op: "error", code: "overflow", message: "reset-to-snapshot" }));
+                }
+            }
+        }
+    }
+    return delivered;
+}
+
+// ---------------- schemas ----------------
+const subscribeSchema = z.object({
+    op: z.literal("subscribe"),
+    table: z.string().min(1),
+    hashId: z.string().min(1),
+    queryFbB64: z.string().min(1),
+    resumeFromVersion: z.number().int().nonnegative().optional()
+});
+
+const unsubscribeSchema = z.object({
+    op: z.literal("unsubscribe"),
+    table: z.string().min(1),
+    hashId: z.string().min(1)
+});
+
+// ---------------- WS server ----------------
+uWS.App({})
+    .ws("/*", {
+        idleTimeout: 60,
+        maxBackpressure: 1 << 20,
+        maxPayloadLength: 1 << 20,
+
+        upgrade: (res, req, context) => {
+            console.log("[ws] upgrade attempt", {
+                url: req.getUrl(),
+                protocol: req.getHeader("sec-websocket-protocol"),
+                userAgent: req.getHeader("user-agent"),
+            });
+
+            try {
+                const auth = authenticate(req);
+
+                const protoHdr = req.getHeader("sec-websocket-protocol") || "";
+                const parts = protoHdr.split(",").map(s => s.trim()).filter(Boolean);
+
+                // Default = no subprotocol
+                let chosenProto = "";
+
+                if (parts.length > 0) {
+                    chosenProto = parts[0];
+                    res.writeHeader("Sec-WebSocket-Protocol", chosenProto);
+                    console.log("[ws] selecting subprotocol:", chosenProto);
+                } else {
+                    console.log("[ws] no subprotocol selected");
+                }
+
+                // IMPORTANT: always pass a string ("" if none)
+                res.upgrade(
+                    {
+                        userId: auth.userId,
+                        tenantId: auth.tenantId,
+                        isAuthenticated: auth.isAuthenticated,
+                    },
+                    req.getHeader("sec-websocket-key"),
+                    chosenProto,
+                    req.getHeader("sec-websocket-extensions"),
+                    context
+                );
+            } catch (e) {
+                console.error("[ws] upgrade threw error:", e);
+                try { res.writeStatus("400 Bad Request").end("upgrade failed"); } catch { }
+            }
+        },
+
+        open: (ws) => {
+            console.log("[ws] OPEN ok");
+            const id = randomUUID();
+            (ws as any).id = id;
+            const s = {
+                id,
+                socket: ws,
+                userId: (ws as any).userId,
+                tenantId: (ws as any).tenantId,
+                subs: new Set<string>(),
+                sendQueue: [] as string[],
+                subStates: new Map<string, SubState>()
+            } as any;
+            sessions.set(id, s);
+            const interval = setInterval(() => { try { ws.ping(); } catch { } }, PING_INTERVAL_MS);
+            (ws as any)._heartbeat = interval;
+        },
+
+        message: (ws, arrayBuffer, isBinary) => {
+            if (isBinary) return;
+            let msg: ClientMsg;
+            try {
+                msg = JSON.parse(Buffer.from(arrayBuffer).toString("utf8"));
+            } catch {
+                safeSend(ws, { op: "error", code: "bad_json", message: "invalid JSON" });
+                return;
+            }
+            if (msg.op === "ping") { safeSend(ws, { op: "pong" }); return; }
+            if (subscribeSchema.safeParse(msg).success) {
+                const { table, hashId, resumeFromVersion } = msg as any;
+                const key = subKey(table, hashId);
+                const s = sessions.get((ws as any).id)!;
+                addSub(s, key);
+                safeSend(ws, { op: "ack", hashId });
+                let fence = LAST_SEEN_LSN;
+                if (typeof resumeFromVersion === 'number' && Number.isFinite(resumeFromVersion)) {
+                    const r = BigInt(resumeFromVersion);
+                    if (r > fence) fence = r;
+                }
+                (s as any).subStates.set(key, { cursorLsn: fence, buffering: true, buffer: [] });
+                safeSend(ws, {
+                    op: "snapshot",
+                    hashId,
+                    version: 0,
+                    cursor: { lsn: fence.toString() },
+                    rows: []
+                });
+                const sub = (s as any).subStates.get(key) as SubState;
+                if (sub) {
+                    sub.buffer.sort((a, b) => (a.lsn < b.lsn ? -1 : (a.lsn > b.lsn ? 1 : 0)));
+                    for (const m of sub.buffer) {
+                        if (m.lsn > sub.cursorLsn) {
+                            deliverBinaryLSN(hashId, m.payload, m.lsn, s);
+                            sub.cursorLsn = m.lsn;
+                        }
+                    }
+                    sub.buffer = [];
+                    sub.buffering = false;
+                }
+                return;
+            }
+            if (unsubscribeSchema.safeParse(msg).success) {
+                const { table, hashId } = msg as any;
+                const key = subKey(table, hashId);
+                const s = sessions.get((ws as any).id)!;
+                removeSub(s, key);
+                (s as any).subStates?.delete(key);
+                return;
+            }
+            safeSend(ws, { op: "error", code: "bad_op", message: "unknown message" });
+        },
+
+        drain: (ws) => {
+            const s = sessions.get((ws as any).id);
+            if (!s) return;
+            if ((s as any)._slow) {
+                (s as any)._slow = false;
+                if (SLOW_SOCKETS > 0) SLOW_SOCKETS--;
+            }
+            while (s.sendQueue.length) {
+                const next = s.sendQueue.shift()!;
+                const ok = ws.send(next);
+                if (!ok) { s.sendQueue.unshift(next); break; }
+            }
+        },
+
+        close: (ws) => {
+            clearInterval((ws as any)._heartbeat);
+            const s = sessions.get((ws as any).id);
+            if (s) {
+                for (const key of [...s.subs]) removeSub(s, key);
+                (s as any).subStates?.clear?.();
+                if ((s as any)._slow) { (s as any)._slow = false; if (SLOW_SOCKETS > 0) SLOW_SOCKETS--; }
+                sessions.delete(s.id);
+            }
+        }
+    })
+    .listen(PORT, (ok) => {
+        if (!ok) { console.error("WS listen failed"); process.exit(1); }
+        console.log(`WS listening on :${PORT}`);
+    });
+
+// ---- Kafka consumer → fan-out ----
+const consumer = new GatewayConsumer(
+    KAFKA_TOPICS,
+    KAFKA_GROUP,
+    KAFKA_BROKERS,
+    {
+        onMessage: (hashId, value, raw) => {
+            const lsn = readLsnHeader(raw);
+            if (lsn > LAST_SEEN_LSN) LAST_SEEN_LSN = lsn;
+            deliverBinaryLSN(hashId, value, lsn);
+        },
+        onError: (err) => console.error("[kafka] error", err),
+        onRebalance: (ev) => console.log("[kafka] rebalance", ev?.code ?? ev),
+    }
+);
+consumer.start();
+
+setInterval(() => {
+    if (SLOW_SOCKETS > 100) consumer.pauseAll();
+    else consumer.resumeAll();
+}, 250);
+
+-------- [ Separator ] ------
+
+File Name: src/state.ts
+Size: 899 B
+Code:
+import type { SubKey } from "./types";
+
+export interface Session {
+    id: string;
+    socket: any;             // uWS.WebSocket
+    userId: string;
+    tenantId: string;
+    subs: Set<SubKey>;
+    sendQueue: string[];     // backpressure buffer (serialized frames)
+};
+
+export const sessions = new Map<string, Session>();
+
+// Subscriptions: subKey -> Set(sessionId)
+export const subToSessions = new Map<SubKey, Set<string>>();
+
+export function addSub(s: Session, key: SubKey) {
+    if (!s.subs.has(key)) {
+        s.subs.add(key);
+        if (!subToSessions.has(key)) subToSessions.set(key, new Set());
+        subToSessions.get(key)!.add(s.id);
+    }
+}
+
+export function removeSub(s: Session, key: SubKey) {
+    if (s.subs.delete(key)) {
+        const g = subToSessions.get(key);
+        if (g) {
+            g.delete(s.id);
+            if (g.size === 0) subToSessions.delete(key);
+        }
+    }
+}
+-------- [ Separator ] ------
+
+File Name: src/types-ext.d.ts
+Size: 1.02 KB
+Code:
+// declare module 'node-rdkafka' {
+//     // Minimal surface we use; you can replace with community types
+//     export interface Message {
+//         value?: Buffer;
+//         key?: Buffer | string | null;
+//         topic: string;
+//         partition: number;
+//         offset: number;
+//         timestamp: number;
+//     }
+//     export interface LibrdKafkaError extends Error {
+//         code: number;
+//     }
+//     export class KafkaConsumer {
+//         constructor(globalConf: any, topicConf?: any);
+//         connect(): void;
+//         disconnect(): void;
+//         subscribe(topics: string[]): void;
+//         consume(): void;
+//         assignments(): any[];
+//         pause(assignments: any[]): void;
+//         resume(assignments: any[]): void;
+//         on(event: 'ready', cb: () => void): this;
+//         on(event: 'data', cb: (message: Message) => void): this;
+//         on(event: 'rebalance', cb: (ev: any) => void): this;
+//         on(event: 'event.error', cb: (err: LibrdKafkaError) => void): this;
+//     }
+// }
+-------- [ Separator ] ------
+
+File Name: src/types.ts
+Size: 746 B
+Code:
+export type ClientMsg =
+    | { op: "ping" }
+    | { op: "subscribe"; table: string; hashId: string; queryFbB64: string; resumeFromVersion?: number }
+    | { op: "unsubscribe"; table: string; hashId: string };
+
+export type ServerMsg =
+    | { op: "pong" }
+    | { op: "ack"; hashId: string }
+    | { op: "snapshot"; hashId: string; version: number; cursor: Record<string, any>; rows: any[] }
+    | { op: "diff"; hashId: string; version: number; cursor: Record<string, any>; changes: any[] }
+    | { op: "diffB64"; hashId: string; b64: string }
+    | { op: "error"; code: string; message: string };
+
+export type SubKey = string; // `${table}|${hashId}`
+export const subKey = (_table: string, hashId: string) => hashId; // <— route by hashId only
+-------- [ Separator ] ------
