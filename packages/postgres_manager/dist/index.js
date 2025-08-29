@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.NullsSortOrder = exports.SQLDataFilterType = exports.SQLFilterWrapperType = exports.DbResponse = exports.AddSingleDbRequest = exports.UpdateSingleDbRequest = exports.EditDbRequest = exports.GetSingleRecordRequest = exports.GetDataDbRequest = exports.FetchDbRequest = exports.DbRequest = exports.QueryProcessor = exports.PostgresManager = void 0;
+exports.SQLDataType = exports.ColumnConstraint = exports.OrderSort = exports.NullsSortOrder = exports.SQLDataFilterType = exports.SQLFilterWrapperType = exports.SchemaModifierRequest = exports.CreateTableDbRequest = exports.AggregationRequest = exports.DbResponse = exports.AddSingleDbRequest = exports.UpdateSingleDbRequest = exports.EditDbRequest = exports.GetSingleRecordRequest = exports.GetDataDbRequest = exports.FetchDbRequest = exports.DbRequest = exports.QueryProcessor = exports.PostgresManager = void 0;
 var postgress_manager_1 = require("./helpers/postgress_manager");
 Object.defineProperty(exports, "PostgresManager", { enumerable: true, get: function () { return postgress_manager_1.PostgresManager; } });
 var query_builder_1 = require("./helpers/query_builder");
@@ -14,7 +14,14 @@ Object.defineProperty(exports, "EditDbRequest", { enumerable: true, get: functio
 Object.defineProperty(exports, "UpdateSingleDbRequest", { enumerable: true, get: function () { return requests_1.UpdateSingleDbRequest; } });
 Object.defineProperty(exports, "AddSingleDbRequest", { enumerable: true, get: function () { return requests_1.AddSingleDbRequest; } });
 Object.defineProperty(exports, "DbResponse", { enumerable: true, get: function () { return requests_1.DbResponse; } });
+Object.defineProperty(exports, "AggregationRequest", { enumerable: true, get: function () { return requests_1.AggregationRequest; } });
+Object.defineProperty(exports, "CreateTableDbRequest", { enumerable: true, get: function () { return requests_1.CreateTableDbRequest; } });
+Object.defineProperty(exports, "SchemaModifierRequest", { enumerable: true, get: function () { return requests_1.SchemaModifierRequest; } });
 var filters_1 = require("./models/filters/filters");
 Object.defineProperty(exports, "SQLFilterWrapperType", { enumerable: true, get: function () { return filters_1.SQLFilterWrapperType; } });
 Object.defineProperty(exports, "SQLDataFilterType", { enumerable: true, get: function () { return filters_1.SQLDataFilterType; } });
 Object.defineProperty(exports, "NullsSortOrder", { enumerable: true, get: function () { return filters_1.NullsSortOrder; } });
+Object.defineProperty(exports, "OrderSort", { enumerable: true, get: function () { return filters_1.OrderSort; } });
+var enums_1 = require("./models/enums");
+Object.defineProperty(exports, "ColumnConstraint", { enumerable: true, get: function () { return enums_1.ColumnConstraint; } });
+Object.defineProperty(exports, "SQLDataType", { enumerable: true, get: function () { return enums_1.SQLDataType; } });

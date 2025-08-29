@@ -1,0 +1,115 @@
+include "sql_schema.fbs"; // your earlier FBS with explicit numeric enums
+namespace SqlRpc;
+
+// ---------- RPC Method ----------
+enum RpcMethod : ubyte {
+  GET_DATA         = 0,
+  GET_SINGLE       = 1,
+  ADD_SINGLE       = 2,
+  UPDATE_SINGLE    = 3,
+  DELETE_ROW       = 4,
+  CREATE_TABLE     = 5,
+  TABLE_EXISTS     = 6,
+  RUN_AGGREGATION  = 7
+}
+
+// ---------- Requests (use pieces from SqlSchema) ----------
+
+table GetDataReq {
+  company_id: string;
+  table_name: string;
+  wrapper: SqlSchema.BasicSqlDataFilterWrapper;  // optional; for simple calls pass empty
+  limit: uint32 = 0;      // 0 → no limit
+  offset: uint32 = 0;     // optional; prefer cursor later
+  order: [SqlSchema.OrderKeySpec];               // optional
+  cursor: [SqlSchema.CursorEntry];
+  strict_after: bool = true;
+}
+
+table GetSingleReq {
+  company_id: string;
+  table_name: string;
+  primary_key_column: string;
+  primary_id: string;
+}
+
+table AddSingleReq {
+  company_id: string;
+  table_name: string;
+  primary_key_column: string;
+  // row as JSON (server already casts objects to jsonb), pragmatic & compact
+  row_json: string;
+}
+
+table UpdateSingleReq {
+  company_id: string;
+  table_name: string;
+  primary_key_column: string;
+  primary_id: string;
+  updates_json: string;
+}
+
+table DeleteRowReq {
+  company_id: string;
+  table_name: string;
+  primary_key_column: string;
+  primary_id: string;
+}
+
+table CreateTableReq {
+  company_id: string;
+  definition: SqlSchema.TableDefinition;
+}
+
+table TableExistsReq {
+  company_id: string;
+  table_name: string;
+}
+
+table RunAggregationReq {
+  company_id: string;
+  table_name: string;
+  count_enabled: bool = false;
+  sum_fields: [string];
+  average_fields: [string];
+  minimum_fields: [string];
+  maximum_fields: [string];
+  wrapper: SqlSchema.BasicSqlDataFilterWrapper;
+}
+
+// ---------- Responses ----------
+
+table RowsJson { rows: [string]; }           // each element is one row JSON
+table RowJson  { row: string; }              // single row JSON
+table BoolRes  { value: bool; }
+table AggRes   { agg: SqlSchema.DataHelperAggregation; }
+
+enum ErrorCode : ubyte { NONE = 0, BAD_REQUEST = 1, INTERNAL = 2 }
+
+union RpcResponse {
+  RowsJson, RowJson, BoolRes, AggRes
+}
+
+table ResponseEnvelope {
+  correlation_id: string;
+  ok: bool = true;
+  error_code: ErrorCode = NONE;
+  error_message: string;
+  data: RpcResponse;
+}
+
+// ---------- Envelope ----------
+
+union RpcPayload {
+  GetDataReq, GetSingleReq, AddSingleReq, UpdateSingleReq, DeleteRowReq,
+  CreateTableReq, TableExistsReq, RunAggregationReq
+}
+
+table RequestEnvelope {
+  correlation_id: string;
+  reply_topic: string;        // producer can override default reply topic
+  method: RpcMethod;
+  payload: RpcPayload;        // one of the above
+}
+
+root_type RequestEnvelope;

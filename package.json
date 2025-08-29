@@ -6,10 +6,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "yarn workspaces foreach -pt run build",
-    "start": "yarn workspace @cladbe/server start",
-    "dev": "yarn workspace @cladbe/server dev",
-    "restart-server": "yarn workspace @cladbe/server restart-server"
+
   },
   "devDependencies": {
     "typescript": "^5.5.3"

@@ -1,0 +1,25 @@
+{
+  "name": "@cladbe/postgres_rpc",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "gen:ts": "flatc --ts -o src/rpc/generated schemas/sql/*.fbs",
+    "dev": "node --loader ts-node/esm src/index.ts",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@cladbe/postgres_manager": "file:../postgres_manager",
+    "dotenv": "^17.2.1",
+    "flatbuffers": "^23.5.26",
+    "node-rdkafka": "^3.5.0"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.5.3"
+  }
+}

@@ -48,5 +48,16 @@ class PostgresManager {
         console.log(query.toQuery());
         return query;
     }
+    async runAggregationQuery(request) {
+        return this.queryProcessor.runAggregationQuery(request);
+    }
+    async tableExists(request) {
+        return await this.queryProcessor.tableExists(request);
+    }
+    async deleteRequest(request) {
+        let query = this.queryProcessor.buildQuery(request);
+        console.log(query.toQuery());
+        return query.returning('*');
+    }
 }
 exports.PostgresManager = PostgresManager;

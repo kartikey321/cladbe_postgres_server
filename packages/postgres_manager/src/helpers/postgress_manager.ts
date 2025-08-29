@@ -1,8 +1,15 @@
 import type {Knex} from "knex";
 import knex from "knex";
 import {QueryProcessor} from "./query_builder";
-import {CreateTableDbRequest, EditDbRequest, FetchDbRequest, GetDataDbRequest} from "../models/requests";
+import {
+    CreateTableDbRequest,
+    AggregationRequest,
+    EditDbRequest,
+    FetchDbRequest,
+    GetDataDbRequest, DeleteRowDbRequest, TableExistsRequest
+} from "../models/requests";
 import dotenv from 'dotenv';
+import {DataHelperAggregation} from "../models/aggregation";
 
 export class PostgresManager {
     private static instance: PostgresManager;
@@ -51,6 +58,19 @@ export class PostgresManager {
         let query = this.queryProcessor.buildSchemaModifierQuery(request);
         console.log(query.toQuery());
         return query;
+    }
+    async runAggregationQuery(request:AggregationRequest):Promise<DataHelperAggregation> {
+
+        return this.queryProcessor.runAggregationQuery(request);
+    }
+    async tableExists(request:TableExistsRequest):Promise<boolean>{
+        return await this.queryProcessor.tableExists(request);
+    }
+
+    async deleteRequest(request:DeleteRowDbRequest){
+        let query = this.queryProcessor.buildQuery(request);
+        console.log(query.toQuery());
+        return query.returning('*');
     }
 
 }

@@ -23,6 +23,17 @@ function ensureValidColumn(name) {
     }
     return name;
 }
+function parseOrder(sort) {
+    switch (sort) {
+        case "ASC_DEFAULT": return { dir: "asc" };
+        case "ASC_NULLS_FIRST": return { dir: "asc", nulls: "first" };
+        case "ASC_NULLS_LAST": return { dir: "asc", nulls: "last" };
+        case "DESC_DEFAULT": return { dir: "desc" };
+        case "DESC_NULLS_FIRST": return { dir: "desc", nulls: "first" };
+        case "DESC_NULLS_LAST": return { dir: "desc", nulls: "last" };
+        default: return { dir: "desc" }; // sane default
+    }
+}
 // ---- QueryProcessor ----
 class QueryProcessor {
     knex;
@@ -31,16 +42,14 @@ class QueryProcessor {
     }
     createTable(request) {
         return this.knex.schema.createTable(request.name, (table) => {
-            // Define columns
             request.columns.forEach((column) => {
                 let columnDefinition;
-                // Map SQLDataType to Knex column types
                 switch (column.dataType) {
                     case enums_1.SQLDataType.text:
                         columnDefinition = table.text(column.name);
                         break;
                     case enums_1.SQLDataType.varchar:
-                        columnDefinition = table.string(column.name);
+                        columnDefinition = table.string(column.name, column.customOptions?.length || 255);
                         break;
                     case enums_1.SQLDataType.char:
                         columnDefinition = table.specificType(column.name, 'char');
@@ -64,7 +73,7 @@ class QueryProcessor {
                         columnDefinition = table.smallint(column.name);
                         break;
                     case enums_1.SQLDataType.decimal:
-                        columnDefinition = table.decimal(column.name);
+                        columnDefinition = table.decimal(column.name, 8, 2);
                         break;
                     case enums_1.SQLDataType.numeric:
                         columnDefinition = table.specificType(column.name, 'numeric');
@@ -152,7 +161,13 @@ class QueryProcessor {
                             break;
                         case enums_1.ColumnConstraint.default_:
                             if (column.customOptions?.defaultValue) {
-                                columnDefinition.defaultTo(column.customOptions.defaultValue);
+                                // Handle CURRENT_TIMESTAMP for timestamptz
+                                if (column.dataType === enums_1.SQLDataType.timestamptz && column.customOptions.defaultValue === 'CURRENT_TIMESTAMP') {
+                                    columnDefinition.defaultTo(this.knex.raw('CURRENT_TIMESTAMP'));
+                                }
+                                else {
+                                    columnDefinition.defaultTo(column.customOptions.defaultValue);
+                                }
                             }
                             break;
                         case enums_1.ColumnConstraint.references:
@@ -175,16 +190,59 @@ class QueryProcessor {
             if (request.comment) {
                 table.comment(request.comment);
             }
-            // Apply table options (e.g., engine, charset)
+            // Apply table options
             if (request.tableOptions) {
                 Object.entries(request.tableOptions).forEach(([key, value]) => {
                     if (key.toLowerCase() === 'engine') {
                         table.engine(value);
                     }
-                    // Add more table options as needed (e.g., charset, collation)
                 });
             }
         });
+    }
+    async runAggregation(query, request) {
+        const { sumFields, averageFields, minimumFields, maximumFields, countEnabled } = request;
+        // Build query with aliases
+        sumFields?.forEach(field => {
+            ensureValidColumn(field);
+            query.sum({ [`sum_${field}`]: field });
+        });
+        averageFields?.forEach(field => {
+            ensureValidColumn(field);
+            query.avg({ [`avg_${field}`]: field });
+        });
+        minimumFields?.forEach(field => {
+            ensureValidColumn(field);
+            query.min({ [`min_${field}`]: field });
+        });
+        maximumFields?.forEach(field => {
+            ensureValidColumn(field);
+            query.max({ [`max_${field}`]: field });
+        });
+        if (countEnabled) {
+            query.count({ total_count: "*" });
+        }
+        const result = await query.first();
+        if (!result)
+            return {};
+        // Map to DataHelperAggregation
+        const aggregation = {
+            count: countEnabled ? Number(result.total_count) : undefined,
+            sumValues: sumFields?.length
+                ? Object.fromEntries(sumFields.map(f => [f, Number(result[`sum_${f}`] ?? 0)]))
+                : undefined,
+            avgValues: averageFields?.length
+                ? Object.fromEntries(averageFields.map(f => [f, Number(result[`avg_${f}`] ?? 0)]))
+                : undefined,
+            minimumValues: minimumFields?.length
+                ? Object.fromEntries(minimumFields.map(f => [f, Number(result[`min_${f}`] ?? 0)]))
+                : undefined,
+            maximumValues: maximumFields?.length
+                ? Object.fromEntries(maximumFields.map(f => [f, Number(result[`max_${f}`] ?? 0)]))
+                : undefined,
+        };
+        console.log(aggregation);
+        return aggregation;
     }
     /**
      * Apply all filters recursively to a query
@@ -293,14 +351,39 @@ class QueryProcessor {
                 throw new Error(`Unsupported filter type: ${filterType}`);
         }
     }
+    /**
+     * Build a query for a given request
+     */
+    tableExists(request) {
+        return this.knex.schema.hasTable(request.fullTableName);
+    }
     // Implementation signature (must be compatible with all overloads)
     buildQuery(request) {
-        const safeTable = ensureValidColumn(request.tableName);
+        const safeTable = ensureValidColumn(request.fullTableName);
         let query = this.knex(safeTable);
         // Type guard to check if it's a FetchDbRequest
         if (request instanceof requests_1.GetDataDbRequest) {
             if (request.filters?.length) {
                 query = this.processFilters(query, request.filters);
+            }
+            if (request.orderKeys?.length) {
+                for (const ok of request.orderKeys) {
+                    const field = ensureValidColumn(ok.field);
+                    const { dir, nulls } = parseOrder(ok.sort);
+                    // Knex (pg) supports nulls param
+                    if (nulls) {
+                        query = query.orderBy(field, dir, nulls);
+                    }
+                    else {
+                        query = query.orderBy(field, dir);
+                    }
+                }
+            }
+            else if (request.dataSort) {
+                // Back-compat: single key sort
+                const field = ensureValidColumn(request.dataSort.field);
+                const dir = request.dataSort.ascending ? "asc" : "desc";
+                query = query.orderBy(field, dir);
             }
             if (request.limit != null) {
                 query = query.limit(request.limit);
@@ -324,19 +407,39 @@ class QueryProcessor {
             ]);
         }
         else if (request instanceof requests_1.AddSingleDbRequest) {
-            query = this.knex(safeTable).insert({
+            const payload = {
                 ...request.data,
-                [`${request.primaryKeyColumn}`]: request.data[request.primaryKeyColumn],
-            });
+                [request.primaryKeyColumn]: request.data[request.primaryKeyColumn],
+            };
+            // Cast any object/array to jsonb so pg doesn’t treat it as text[]
+            for (const [k, v] of Object.entries(payload)) {
+                if (v !== null && typeof v === 'object') {
+                    payload[k] = this.knex.raw('?::jsonb', [JSON.stringify(v)]);
+                }
+            }
+            query = this.knex(safeTable).insert(payload);
         }
         else if (request instanceof requests_1.UpdateSingleDbRequest) {
             query = this.knex(safeTable).where({ [`${request.primaryKeyColumn}`]: request.primaryId }).update(request.updates);
         }
+        else if (request instanceof requests_1.DeleteRowDbRequest) {
+            query = this.processFilters(query, request.getFilters()).del();
+        }
         return query;
+    }
+    async runAggregationQuery(request) {
+        const safeTable = ensureValidColumn(request.fullTableName);
+        let q = this.knex(safeTable);
+        if (request.filters?.length) {
+            q = this.processFilters(q, request.filters);
+        }
+        return this.runAggregation(q, request);
     }
     buildSchemaModifierQuery(request) {
         let query = undefined;
         if (request instanceof requests_1.CreateTableDbRequest) {
+            const definition = request.tableDefinition;
+            definition.name = request.fullTableName;
             query = this.createTable(request.tableDefinition);
         }
         if (query)

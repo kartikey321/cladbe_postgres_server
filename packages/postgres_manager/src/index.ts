@@ -9,7 +9,9 @@ export {
     UpdateSingleDbRequest,
     AddSingleDbRequest,
     DbResponse,
-    ResponseForName
+    AggregationRequest,
+    CreateTableDbRequest,
+    SchemaModifierRequest
 } from './models/requests';
 export {
     BaseSqlDataFilter,
@@ -19,5 +21,8 @@ export {
     SQLFilterWrapperType,
     SQLDataFilterType,
     NullsSortOrder,
-    DataSort
+    DataSort,OrderSort,OrderKeySpec
 } from './models/filters/filters';
+
+export {ColumnConstraint,SQLDataType} from './models/enums';
+export {DataHelperAggregation} from './models/aggregation';

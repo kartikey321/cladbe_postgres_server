@@ -40,7 +40,7 @@ module.exports = {
         },
         {
             name: "postgres-rpc",
-            cwd: "/opt/cladbe/postgres_rpc",
+            cwd: "./packages/postgres_rpc",
             script: "dist/index.js",                // built by `npm run build`
             exec_mode: "fork",
             instances: 1,

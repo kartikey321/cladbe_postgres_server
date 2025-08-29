@@ -1,11 +1,13 @@
 import type { Knex } from "knex";
 import { BaseSqlDataFilter } from "../models/filters/filters";
-import { DbRequest, FetchDbRequest, SchemaModifierRequest } from "../models/requests";
+import { AggregationRequest, DbRequest, FetchDbRequest, SchemaModifierRequest, TableExistsRequest } from "../models/requests";
 import { TableDefinition } from "../models/table_definition";
+import { DataHelperAggregation } from "../models/aggregation";
 export declare class QueryProcessor {
     private readonly knex;
     constructor(knexInstance: Knex);
     createTable(request: TableDefinition): Knex.SchemaBuilder;
+    private runAggregation;
     /**
      * Apply all filters recursively to a query
      */
@@ -18,8 +20,10 @@ export declare class QueryProcessor {
     /**
      * Build a query for a given request
      */
+    tableExists(request: TableExistsRequest): Promise<boolean>;
     buildQuery<TRecord extends {}, TResult>(request: DbRequest): Knex.QueryBuilder<TRecord, TResult>;
     buildQuery<TRecord extends {}, TResult>(request: FetchDbRequest): Knex.QueryBuilder<TRecord, TResult[]>;
+    runAggregationQuery(request: AggregationRequest): Promise<DataHelperAggregation>;
     buildSchemaModifierQuery(request: SchemaModifierRequest): Knex.SchemaBuilder;
 }
 //# sourceMappingURL=query_builder.d.ts.map
