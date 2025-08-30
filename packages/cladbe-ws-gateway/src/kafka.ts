@@ -40,6 +40,7 @@ export class GatewayConsumer {
     start() {
         this.consumer
             .on('ready', () => {
+                console.log('[cdc] consumer ready', { groupId: this.groupId, topics: this.topics, brokers: this.brokers });
                 this.consumer.subscribe(this.topics);
                 this.consumer.consume();
             })
@@ -48,10 +49,20 @@ export class GatewayConsumer {
                     ? (Buffer.isBuffer(m.key) ? m.key.toString('utf8') : String(m.key))
                     : '';
                 if (!key || !m.value) return;
-                this.handlers.onMessage(key, m.value, m);
+
+                // Toggle this for very noisy per-message logs:
+                // console.log('[cdc] message', { topic: m.topic, partition: m.partition, offset: m.offset, key, bytes: (m.value as Buffer).byteLength });
+
+                this.handlers.onMessage(key, m.value as Buffer, m);
             })
-            .on('event.error', (err: LibrdKafkaError) => this.handlers.onError?.(err))
-            .on('rebalance', (ev: any) => this.handlers.onRebalance?.(ev));
+            .on('event.error', (err: LibrdKafkaError) => {
+                console.error('[cdc] consumer error', err);
+                this.handlers.onError?.(err);
+            })
+            .on('rebalance', (ev: any) => {
+                console.log('[cdc] rebalance', ev);
+                this.handlers.onRebalance?.(ev);
+            });
 
         this.consumer.connect();
     }

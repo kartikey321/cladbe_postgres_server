@@ -8,7 +8,7 @@ import { createWsApp } from "./ws/app.js";
 import { SqlRpcClient } from "./rpc/sql-rpc.js";
 import { GatewayConsumer } from "./kafka.js";
 import { readLsnHeader, LAST_SEEN_LSN } from "./lsn.js";
-import {deliverBinaryLSN, SLOW_SOCKETS} from "./delivery.js";
+import { deliverBinaryLSN, SLOW_SOCKETS } from "./delivery.js";
 
 void (async function bootstrap() {
     // --- start SQL-RPC client
@@ -20,7 +20,8 @@ void (async function bootstrap() {
         timeoutMs: 10_000
     });
     await sqlRpc.start();
-    console.log("[sql-rpc] client ready", { replyTopic: SQL_RPC_REPLY_TOPIC });
+    console.log("[boot] sql-rpc client ready",
+        { requestTopic: SQL_RPC_REQUEST_TOPIC, replyTopic: SQL_RPC_REPLY_TOPIC, groupId: SQL_RPC_GROUP_ID });
 
     // --- create WS app with deps
     const app = createWsApp({
@@ -47,6 +48,8 @@ void (async function bootstrap() {
                     : "";
                 if (!key) return;
 
+                // NOTE: this can be noisy — keep for now to trace end-to-end
+                console.log("[cdc] fan-out", { key, bytes: value.byteLength, lsn: lsn.toString() });
                 deliverBinaryLSN(key, value, lsn);
             },
             onError: (err) => console.error("[kafka] error", err),
@@ -57,7 +60,11 @@ void (async function bootstrap() {
 
     // coarse flow control for CDC
     setInterval(() => {
-        if (SLOW_SOCKETS > SLOW_SOCKET_PAUSE_THRESHOLD) consumer.pauseAll();
-        else consumer.resumeAll();
+        if (SLOW_SOCKETS > SLOW_SOCKET_PAUSE_THRESHOLD) {
+            console.warn("[cdc] pausing consumer due to slow sockets", { slow: SLOW_SOCKETS });
+            consumer.pauseAll();
+        } else {
+            consumer.resumeAll();
+        }
     }, 250);
 })();

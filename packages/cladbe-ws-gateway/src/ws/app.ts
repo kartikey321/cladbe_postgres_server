@@ -7,7 +7,7 @@ import { sessions, addSub, removeSub } from "../state.js";
 import { type ClientMsg, type ServerMsg, subKey } from "../types.js";
 import { PING_INTERVAL_MS } from "../config.js";
 import { LAST_SEEN_LSN, SubState } from "../lsn.js";
-import {deliverBinaryLSN, SLOW_SOCKETS} from "../delivery.js";
+import { deliverBinaryLSN, SLOW_SOCKETS } from "../delivery.js";
 
 export type WsDeps = {
     getSnapshot: (companyId: string, table: string) => Promise<any[]>;
@@ -65,6 +65,7 @@ export function createWsApp(deps: WsDeps) {
                 try {
                     const userId = req.getHeader("x-user-id") || "anonymous";
                     const tenantId = req.getHeader("x-tenant") || "demo";
+                    console.log("[ws] upgrade", { userId, tenantId, url: req.getUrl() });
                     res.upgrade(
                         { userId, tenantId },
                         req.getHeader("sec-websocket-key"),
@@ -73,6 +74,7 @@ export function createWsApp(deps: WsDeps) {
                         context
                     );
                 } catch (err) {
+                    console.error("[ws] upgrade failed", err);
                     res.writeStatus("400 Bad Request").end("Upgrade failed");
                 }
             },
@@ -91,6 +93,8 @@ export function createWsApp(deps: WsDeps) {
                     subStates: new Map<string, SubState>(),
                 } as any;
                 sessions.set(id, s);
+
+                console.log("[ws] open", { id, userId: s.userId, tenantId: s.tenantId });
 
                 connections.set(id, { id, socket: ws, userId: s.userId });
                 safeSendGeneric(ws, { type: "welcome", data: { connectionId: id, connectedClients: connections.size } });
@@ -153,11 +157,15 @@ export function createWsApp(deps: WsDeps) {
 
                     (s as any).subStates.set(key, { cursorLsn: fence, buffering: true, buffer: [] });
 
+                    console.log("[ws] subscribe",
+                        { id, tenant: s.tenantId, table, hashId, resumeFrom: resumeFromVersion ?? 0, fenceLSN: fence.toString() });
+
                     // snapshot via dependency (RPC)
                     (async () => {
                         try {
                             const companyId = s.tenantId || "demo";
                             const rows = await deps.getSnapshot(companyId, table);
+                            console.log("[ws] snapshot ok", { id, table, rows: rows.length, fenceLSN: fence.toString() });
                             safeSend(ws, {
                                 op: "snapshot",
                                 hashId,
@@ -180,6 +188,7 @@ export function createWsApp(deps: WsDeps) {
                                 sub.buffering = false;
                             }
                         } catch (err: any) {
+                            console.error("[ws] snapshot FAILED", { id, table, err: String(err?.message || err) });
                             safeSend(ws, { op: "error", code: "snapshot_failed", message: String(err?.message || err) } as any);
                         }
                     })();
@@ -194,6 +203,7 @@ export function createWsApp(deps: WsDeps) {
                     const s = sessions.get(id)!;
                     removeSub(s, key);
                     (s as any).subStates?.delete(key);
+                    console.log("[ws] unsubscribe", { id, table, hashId });
                     return;
                 }
 
@@ -234,6 +244,7 @@ export function createWsApp(deps: WsDeps) {
                     sessions.delete(s.id);
                     connections.delete(s.id);
                     broadcastAll({ type: "user_left", data: { userId: s.userId, connectionId: s.id } });
+                    console.log("[ws] close", { id, userId: s.userId, tenantId: s.tenantId });
                 }
             }
         })
