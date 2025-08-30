@@ -1,0 +1,46 @@
+import * as flatbuffers from 'flatbuffers';
+import { BasicSqlDataFilterWrapper } from '../sql-schema/basic-sql-data-filter-wrapper.js';
+export declare class RunAggregationReq {
+    bb: flatbuffers.ByteBuffer | null;
+    bb_pos: number;
+    __init(i: number, bb: flatbuffers.ByteBuffer): RunAggregationReq;
+    static getRootAsRunAggregationReq(bb: flatbuffers.ByteBuffer, obj?: RunAggregationReq): RunAggregationReq;
+    static getSizePrefixedRootAsRunAggregationReq(bb: flatbuffers.ByteBuffer, obj?: RunAggregationReq): RunAggregationReq;
+    companyId(): string | null;
+    companyId(optionalEncoding: flatbuffers.Encoding): string | Uint8Array | null;
+    tableName(): string | null;
+    tableName(optionalEncoding: flatbuffers.Encoding): string | Uint8Array | null;
+    countEnabled(): boolean;
+    sumFields(index: number): string;
+    sumFields(index: number, optionalEncoding: flatbuffers.Encoding): string | Uint8Array;
+    sumFieldsLength(): number;
+    averageFields(index: number): string;
+    averageFields(index: number, optionalEncoding: flatbuffers.Encoding): string | Uint8Array;
+    averageFieldsLength(): number;
+    minimumFields(index: number): string;
+    minimumFields(index: number, optionalEncoding: flatbuffers.Encoding): string | Uint8Array;
+    minimumFieldsLength(): number;
+    maximumFields(index: number): string;
+    maximumFields(index: number, optionalEncoding: flatbuffers.Encoding): string | Uint8Array;
+    maximumFieldsLength(): number;
+    wrapper(obj?: BasicSqlDataFilterWrapper): BasicSqlDataFilterWrapper | null;
+    static startRunAggregationReq(builder: flatbuffers.Builder): void;
+    static addCompanyId(builder: flatbuffers.Builder, companyIdOffset: flatbuffers.Offset): void;
+    static addTableName(builder: flatbuffers.Builder, tableNameOffset: flatbuffers.Offset): void;
+    static addCountEnabled(builder: flatbuffers.Builder, countEnabled: boolean): void;
+    static addSumFields(builder: flatbuffers.Builder, sumFieldsOffset: flatbuffers.Offset): void;
+    static createSumFieldsVector(builder: flatbuffers.Builder, data: flatbuffers.Offset[]): flatbuffers.Offset;
+    static startSumFieldsVector(builder: flatbuffers.Builder, numElems: number): void;
+    static addAverageFields(builder: flatbuffers.Builder, averageFieldsOffset: flatbuffers.Offset): void;
+    static createAverageFieldsVector(builder: flatbuffers.Builder, data: flatbuffers.Offset[]): flatbuffers.Offset;
+    static startAverageFieldsVector(builder: flatbuffers.Builder, numElems: number): void;
+    static addMinimumFields(builder: flatbuffers.Builder, minimumFieldsOffset: flatbuffers.Offset): void;
+    static createMinimumFieldsVector(builder: flatbuffers.Builder, data: flatbuffers.Offset[]): flatbuffers.Offset;
+    static startMinimumFieldsVector(builder: flatbuffers.Builder, numElems: number): void;
+    static addMaximumFields(builder: flatbuffers.Builder, maximumFieldsOffset: flatbuffers.Offset): void;
+    static createMaximumFieldsVector(builder: flatbuffers.Builder, data: flatbuffers.Offset[]): flatbuffers.Offset;
+    static startMaximumFieldsVector(builder: flatbuffers.Builder, numElems: number): void;
+    static addWrapper(builder: flatbuffers.Builder, wrapperOffset: flatbuffers.Offset): void;
+    static endRunAggregationReq(builder: flatbuffers.Builder): flatbuffers.Offset;
+}
+//# sourceMappingURL=run-aggregation-req.d.ts.map

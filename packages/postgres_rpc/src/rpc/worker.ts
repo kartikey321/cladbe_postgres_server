@@ -1,268 +1,384 @@
-// src/rpc/worker.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import dotenv from "dotenv";
+
+import * as dotenv from "dotenv";
+import { Buffer } from "node:buffer";
 import * as flatbuffers from "flatbuffers";
-import type { Message } from "node-rdkafka";
 
-import { PostgresManager } from "@cladbe/postgres_manager";
-import {
-    GetDataDbRequest,
-    GetSingleRecordRequest,
-    AddSingleDbRequest,
-    UpdateSingleDbRequest,
-    DeleteRowDbRequest,
-    AggregationRequest,
-    TableExistsRequest,
-} from "@cladbe/postgres_manager/dist/models/requests";
+// generated protocol barrels
+import * as SqlProtocol from "@cladbe/sql-protocol";
 
-import * as FBG from "./generated/sql_rpc";
-import { decodeOrderKey, decodeWrapper } from "./fb_decode";
-import { RpcKafka } from "./kafka";
+// postgres manager (your own lib)
+import * as pgm from "@cladbe/postgres_manager";
+
+// kafka wrapper (the file at src/rpc/kafka.ts)
+import { RpcKafka } from "./kafka.js";
+
+// ----------------------------------------------------------------------------------
+const SqlRpc = SqlProtocol.SqlRpc.SqlRpc;
 
 dotenv.config();
 
-const REQUEST_TOPIC = process.env.SQL_RPC_REQUEST_TOPIC || "sql.rpc.requests";
-const RESPONSE_TOPIC_DEFAULT =
-    process.env.SQL_RPC_RESPONSE_TOPIC || "sql.rpc.responses";
-const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092").split(",");
+const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+
+const REQ_TOPIC = process.env.SQL_RPC_REQUEST_TOPIC || "sql.rpc.requests";
+const RES_TOPIC = process.env.SQL_RPC_RESPONSE_TOPIC || "sql.rpc.responses";
 const GROUP_ID = process.env.SQL_RPC_GROUP_ID || "cladbe-postgres-rpc";
 
-const pg = PostgresManager.getInstance();
-const kafka = new RpcKafka({
+const rpc = new RpcKafka({
     brokers: BROKERS,
     groupId: GROUP_ID,
-    requestTopic: REQUEST_TOPIC,
+    requestTopic: REQ_TOPIC,
 });
 
-// ----- FB response builders -----
-function okRows(corr: string, rows: any[]): Buffer {
-    const b = new flatbuffers.Builder(1024);
-    const rowOffsets = rows.map((r) => b.createString(JSON.stringify(r)));
-    const rowsVec = FBG.SqlRpc.RowsJson.createRowsVector(b, rowOffsets);
-    const rowsObj = FBG.SqlRpc.RowsJson.createRowsJson(b, rowsVec);
-    const env = FBG.SqlRpc.ResponseEnvelope.createResponseEnvelope(
-        b,
-        b.createString(corr),
-        true,
-        FBG.SqlRpc.ErrorCode.NONE,
-        0,
-        FBG.SqlRpc.RpcResponse.RowsJson,
-        rowsObj
+// ----------------------------- helpers ---------------------------------
+
+function bbFrom(buf: Buffer) {
+    return new flatbuffers.ByteBuffer(
+        new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
     );
-    b.finish(env);
-    return Buffer.from(b.asUint8Array());
-}
-function okRow(corr: string, row: any): Buffer {
-    const b = new flatbuffers.Builder(512);
-    const rowStr = FBG.SqlRpc.RowJson.createRowJson(
-        b,
-        b.createString(JSON.stringify(row))
-    );
-    const env = FBG.SqlRpc.ResponseEnvelope.createResponseEnvelope(
-        b,
-        b.createString(corr),
-        true,
-        FBG.SqlRpc.ErrorCode.NONE,
-        0,
-        FBG.SqlRpc.RpcResponse.RowJson,
-        rowStr
-    );
-    b.finish(env);
-    return Buffer.from(b.asUint8Array());
-}
-function okBool(corr: string, val: boolean): Buffer {
-    const b = new flatbuffers.Builder(64);
-    const boolRes = FBG.SqlRpc.BoolRes.createBoolRes(b, val);
-    const env = FBG.SqlRpc.ResponseEnvelope.createResponseEnvelope(
-        b,
-        b.createString(corr),
-        true,
-        FBG.SqlRpc.ErrorCode.NONE,
-        0,
-        FBG.SqlRpc.RpcResponse.BoolRes,
-        boolRes
-    );
-    b.finish(env);
-    return Buffer.from(b.asUint8Array());
-}
-function err(corr: string, code: number, message: string): Buffer {
-    const b = new flatbuffers.Builder(256);
-    const env = FBG.SqlRpc.ResponseEnvelope.createResponseEnvelope(
-        b,
-        b.createString(corr),
-        false,
-        code,
-        b.createString(message),
-        0,
-        0
-    );
-    b.finish(env);
-    return Buffer.from(b.asUint8Array());
 }
 
-// ----- helpers -----
-function collect(m: any, base: string): string[] | undefined {
-    const len = m[`${base}Length`]?.() ?? 0;
-    if (!len) return undefined;
-    const out: string[] = [];
-    for (let i = 0; i < len; i++) out.push(m[base](i)!);
-    return out;
-}
-function readCursorValue(ce: any): any {
-    const vt = ce.valueType();
-    const V = FBG.SqlSchema.FilterValue;
-    if (vt === V.NullValue) return null;
-    if (vt === V.StringValue) { const v = new FBG.SqlSchema.StringValue();  ce.value(v); return v.value(); }
-    if (vt === V.NumberValue) { const v = new FBG.SqlSchema.NumberValue();  ce.value(v); return v.value(); }
-    if (vt === V.Int64Value)  { const v = new FBG.SqlSchema.Int64Value();   ce.value(v); return Number(v.value()); }
-    if (vt === V.BoolValue)   { const v = new FBG.SqlSchema.BoolValue();     ce.value(v); return v.value(); }
-    if (vt === V.TimestampValue) { const v = new FBG.SqlSchema.TimestampValue(); ce.value(v); return Number(v.epoch()); }
-    return undefined;
-}
+function okResponse(
+    builder: flatbuffers.Builder,
+    correlationId: string,
+    dataOffset: number,
+    dataType: SqlProtocol.SqlRpc.SqlRpc.RpcResponse
+): Buffer {
+    const corrStr = builder.createString(correlationId);
 
-// ----- request handler -----
-async function handleEnv(envBytes: Uint8Array) {
-    const bb = new flatbuffers.ByteBuffer(envBytes);
-    const req = FBG.SqlRpc.RequestEnvelope.getRootAsRequestEnvelope(bb);
-
-    const corr = req.correlationId() || "";
-    const replyTopic = req.replyTopic() || RESPONSE_TOPIC_DEFAULT;
-
-    try {
-        switch (req.method()) {
-            case FBG.SqlRpc.RpcMethod.GET_DATA: {
-                const m = new FBG.SqlRpc.GetDataReq(); req.payload(m);
-
-                const order: any[] = [];
-                for (let i = 0; i < m.orderLength(); i++) {
-                    const ok = new FBG.SqlSchema.OrderKeySpec(); m.order(i, ok);
-                    order.push(decodeOrderKey(ok));
-                }
-                const wrapper = m.wrapper();
-                const filters = wrapper ? [decodeWrapper(wrapper)] : undefined;
-
-                const cursor: Record<string, any> | undefined = (() => {
-                    const len = (m.cursorLength && m.cursorLength()) || 0;
-                    if (!len) return undefined;
-                    const obj: Record<string, any> = {};
-                    for (let i = 0; i < len; i++) {
-                        const ce = m.cursor(i)!;
-                        obj[ce.field()!] = readCursorValue(ce);
-                    }
-                    return obj;
-                })();
-
-                const strictAfter = (m.strictAfter && m.strictAfter()) ?? true;
-
-                const tsReq = new GetDataDbRequest(
-                    m.tableName()!,
-                    m.companyId()!,
-                    undefined,
-                    filters,
-                    m.limit() || undefined,
-                    m.offset() || undefined,
-                    order,
-                    cursor,
-                    strictAfter
-                );
-                const rows = await pg.getData(tsReq);
-                kafka.produceSafe(replyTopic, corr, okRows(corr, rows as any[]));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.GET_SINGLE: {
-                const m = new FBG.SqlRpc.GetSingleReq(); req.payload(m);
-                const tsReq = new GetSingleRecordRequest(
-                    m.tableName()!, m.companyId()!, m.primaryKeyColumn()!, m.primaryId()!
-                );
-                const row = await pg.getData(tsReq);
-                kafka.produceSafe(replyTopic, corr, okRow(corr, row));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.ADD_SINGLE: {
-                const m = new FBG.SqlRpc.AddSingleReq(); req.payload(m);
-                const tsReq = new AddSingleDbRequest(
-                    m.tableName()!, m.companyId()!, m.primaryKeyColumn()!, JSON.parse(m.rowJson()!)
-                );
-                const rows = await pg.editData(tsReq);
-                kafka.produceSafe(replyTopic, corr, okRows(corr, rows as any[]));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.UPDATE_SINGLE: {
-                const m = new FBG.SqlRpc.UpdateSingleReq(); req.payload(m);
-                const tsReq = new UpdateSingleDbRequest(
-                    m.tableName()!, m.companyId()!, JSON.parse(m.updatesJson()!),
-                    m.primaryKeyColumn()!, m.primaryId()!
-                );
-                const rows = await pg.editData(tsReq);
-                kafka.produceSafe(replyTopic, corr, okRows(corr, rows as any[]));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.DELETE_ROW: {
-                const m = new FBG.SqlRpc.DeleteRowReq(); req.payload(m);
-                const rows = await pg.deleteRequest(new DeleteRowDbRequest({
-                    tableName: m.tableName()!, companyId: m.companyId()!,
-                    primaryKeyColumn: m.primaryKeyColumn()!, primaryId: m.primaryId()!,
-                }));
-                kafka.produceSafe(replyTopic, corr, okRows(corr, rows as any[]));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.TABLE_EXISTS: {
-                const m = new FBG.SqlRpc.TableExistsReq(); req.payload(m);
-                const exists = await pg.tableExists(new TableExistsRequest(m.tableName()!, m.companyId()!));
-                kafka.produceSafe(replyTopic, corr, okBool(corr, !!exists));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.RUN_AGGREGATION: {
-                const m = new FBG.SqlRpc.RunAggregationReq(); req.payload(m);
-                const wrapper = m.wrapper();
-                const filters = wrapper ? [decodeWrapper(wrapper)] : undefined;
-                const agg = await pg.runAggregationQuery(new AggregationRequest({
-                    tableName: m.tableName()!, companyId: m.companyId()!,
-                    sumFields: collect(m, "sumFields"),
-                    averageFields: collect(m, "averageFields"),
-                    minimumFields: collect(m, "minimumFields"),
-                    maximumFields: collect(m, "maximumFields"),
-                    countEnabled: m.countEnabled(),
-                    filters,
-                }));
-                kafka.produceSafe(replyTopic, corr, okRow(corr, agg));
-                break;
-            }
-
-            case FBG.SqlRpc.RpcMethod.CREATE_TABLE: {
-                throw new Error("CREATE_TABLE via RPC not implemented; use HTTP route for now.");
-            }
-
-            default:
-                throw new Error(`Unknown RPC method: ${req.method()}`);
-        }
-    } catch (e: any) {
-        kafka.produceSafe(
-            replyTopic,
-            corr,
-            err(corr, FBG.SqlRpc.ErrorCode.INTERNAL, e?.message || "internal")
-        );
-    }
+    SqlRpc.ResponseEnvelope.startResponseEnvelope(builder);
+    SqlRpc.ResponseEnvelope.addCorrelationId(builder, corrStr);
+    SqlRpc.ResponseEnvelope.addOk(builder, true);
+    SqlRpc.ResponseEnvelope.addErrorCode(builder, SqlRpc.ErrorCode.NONE);
+    SqlRpc.ResponseEnvelope.addDataType(builder, dataType);
+    SqlRpc.ResponseEnvelope.addData(builder, dataOffset);
+    const env = SqlRpc.ResponseEnvelope.endResponseEnvelope(builder);
+    builder.finish(env);
+    return Buffer.from(builder.asUint8Array());
 }
 
-// ---- lifecycle ----
-export async function startRpcWorker() {
-    kafka.setHandler((msg: Message) => {
-        if (!msg.value) return;
-        void handleEnv(new Uint8Array(msg.value as Buffer));
+function errResponse(
+    builder: flatbuffers.Builder,
+    correlationId: string,
+    code: SqlProtocol.SqlRpc.SqlRpc.ErrorCode,
+    message: string
+): Buffer {
+    const corrStr = builder.createString(correlationId);
+    const msgStr = builder.createString(message);
+
+    SqlRpc.ResponseEnvelope.startResponseEnvelope(builder);
+    SqlRpc.ResponseEnvelope.addCorrelationId(builder, corrStr);
+    SqlRpc.ResponseEnvelope.addOk(builder, false);
+    SqlRpc.ResponseEnvelope.addErrorCode(builder, code);
+    SqlRpc.ResponseEnvelope.addErrorMessage(builder, msgStr);
+    const env = SqlRpc.ResponseEnvelope.endResponseEnvelope(builder);
+    builder.finish(env);
+    return Buffer.from(builder.asUint8Array());
+}
+
+// ----- encode payload variants -----
+
+function encodeRowsJson(
+    builder: flatbuffers.Builder,
+    rows: string[]
+): { off: number; type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse } {
+    const rowOffsets = rows.map((r) => builder.createString(r));
+    const vec = SqlRpc.RowsJson.createRowsVector(builder, rowOffsets);
+    SqlRpc.RowsJson.startRowsJson(builder);
+    SqlRpc.RowsJson.addRows(builder, vec);
+    const off = SqlRpc.RowsJson.endRowsJson(builder);
+    return { off, type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse.RowsJson };
+}
+
+function encodeRowJson(
+    builder: flatbuffers.Builder,
+    row: string
+): { off: number; type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse } {
+    const r = builder.createString(row);
+    SqlRpc.RowJson.startRowJson(builder);
+    SqlRpc.RowJson.addRow(builder, r);
+    const off = SqlRpc.RowJson.endRowJson(builder);
+    return { off, type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse.RowJson };
+}
+
+function encodeBool(
+    builder: flatbuffers.Builder,
+    value: boolean
+): { off: number; type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse } {
+    SqlRpc.BoolRes.startBoolRes(builder);
+    SqlRpc.BoolRes.addValue(builder, value);
+    const off = SqlRpc.BoolRes.endBoolRes(builder);
+    return { off, type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse.BoolRes };
+}
+
+function encodeAgg(
+    builder: flatbuffers.Builder,
+    // eslint-disable-next-line @typescript-eslint/ban-types
+    _aggObj: any
+): { off: number; type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse } {
+    // TODO: map aggObj → SqlSchema.DataHelperAggregation and set on AggRes
+    SqlRpc.AggRes.startAggRes(builder);
+    // SqlRpc.AggRes.addAgg(builder, <SqlSchema.DataHelperAggregation offset>);
+    const off = SqlRpc.AggRes.endAggRes(builder);
+    return { off, type: SqlProtocol.SqlRpc.SqlRpc.RpcResponse.AggRes };
+}
+
+// ----------------------------- dispatcher ---------------------------------
+
+async function handleGetData(req: SqlProtocol.SqlRpc.SqlRpc.GetDataReq): Promise<{ rows: string[] }> {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const limit = req.limit();
+    const offset = req.offset();
+
+    // TODO: map wrapper/order/cursor/strictAfter to your manager
+    const rows = await (pgm as any).getData({
+        companyId,
+        tableName,
+        limit: limit || undefined,
+        offset: offset || undefined,
     });
 
-    await kafka.start();
+    const rowsJson = (rows || []).map((r: any) => JSON.stringify(r));
+    return { rows: rowsJson };
+}
 
-    const shutdown = () => kafka.stop();
-    process.on("SIGINT", shutdown);
-    process.on("SIGTERM", shutdown);
+async function handleGetSingle(
+    req: SqlProtocol.SqlRpc.SqlRpc.GetSingleReq
+): Promise<{ row: string | null }> {
+    const row = await (pgm as any).getSingleRecord({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+        primaryKeyColumn: req.primaryKeyColumn(),
+        primaryId: req.primaryId(),
+    });
+    return { row: row ? JSON.stringify(row) : null };
+}
 
-    console.log(`[RPC] listening: ${REQUEST_TOPIC} -> replies to ${RESPONSE_TOPIC_DEFAULT} (rdkafka; refactored)`);
+async function handleAddSingle(
+    req: SqlProtocol.SqlRpc.SqlRpc.AddSingleReq
+): Promise<{ rows: string[] }> {
+    const added = await (pgm as any).addSingleRecord({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+        primaryKeyColumn: req.primaryKeyColumn(),
+        data: JSON.parse(req.rowJson() || "{}"),
+    });
+    const rowsJson = (added || []).map((r: any) => JSON.stringify(r));
+    return { rows: rowsJson };
+}
+
+async function handleUpdateSingle(
+    req: SqlProtocol.SqlRpc.SqlRpc.UpdateSingleReq
+): Promise<{ rows: string[] }> {
+    const updated = await (pgm as any).updateSingleRecord({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+        primaryKeyColumn: req.primaryKeyColumn(),
+        primaryId: req.primaryId(),
+        updates: JSON.parse(req.updatesJson() || "{}"),
+    });
+    const rowsJson = (updated || []).map((r: any) => JSON.stringify(r));
+    return { rows: rowsJson };
+}
+
+async function handleDeleteRow(
+    req: SqlProtocol.SqlRpc.SqlRpc.DeleteRowReq
+): Promise<{ ok: boolean }> {
+    const ok = await (pgm as any).deleteRow({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+        primaryKeyColumn: req.primaryKeyColumn(),
+        primaryId: req.primaryId(),
+    });
+    return { ok: !!ok };
+}
+
+async function handleCreateTable(
+    req: SqlProtocol.SqlRpc.SqlRpc.CreateTableReq
+): Promise<{ ok: boolean }> {
+    // TODO: map SqlSchema.TableDefinition → your manager's TableDefinition
+    const ok = await (pgm as any).createTable({
+        companyId: req.companyId(),
+        definition: /* map from req.definition() */ {},
+    });
+    return { ok: !!ok };
+}
+
+async function handleTableExists(
+    req: SqlProtocol.SqlRpc.SqlRpc.TableExistsReq
+): Promise<{ ok: boolean }> {
+    const ok = await (pgm as any).tableExists({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+    });
+    return { ok: !!ok };
+}
+
+async function handleRunAggregation(
+    req: SqlProtocol.SqlRpc.SqlRpc.RunAggregationReq
+): Promise<{ agg: any }> {
+    const agg = await (pgm as any).runAggregation({
+        companyId: req.companyId(),
+        tableName: req.tableName(),
+        countEnabled: req.countEnabled(),
+        sumFields: arrayFromVec(req.sumFieldsLength(), (i) => req.sumFields(i)),
+        averageFields: arrayFromVec(req.averageFieldsLength(), (i) => req.averageFields(i)),
+        minimumFields: arrayFromVec(req.minimumFieldsLength(), (i) => req.minimumFields(i)),
+        maximumFields: arrayFromVec(req.maximumFieldsLength(), (i) => req.maximumFields(i)),
+        // TODO: wrapper mapping
+    });
+    return { agg };
+}
+
+function arrayFromVec<T>(len: number, getter: (i: number) => T | null): T[] {
+    const out: T[] = [];
+    for (let i = 0; i < len; i++) {
+        const v = getter(i);
+        if (v != null) out.push(v as T);
+    }
+    return out;
+}
+
+// ----------------------------- main loop ---------------------------------
+
+rpc.setHandler(async (m) => {
+    if (!m.value) return; // guard
+    const value = m.value as Buffer;
+    const bb = bbFrom(value);
+    const req = SqlRpc.RequestEnvelope.getRootAsRequestEnvelope(bb);
+
+    const correlationId = req.correlationId() || "";
+    const replyTopic = req.replyTopic() || RES_TOPIC;
+    const method = req.method();
+
+    const builder = new flatbuffers.Builder(1024);
+
+    try {
+        let respBuf: Buffer | undefined;
+
+        switch (method) {
+            case SqlRpc.RpcMethod.GET_DATA: {
+                const payload = new SqlRpc.GetDataReq();
+                // @ts-ignore generated union API
+                req.payload(payload);
+                const { rows } = await handleGetData(payload);
+                const p = encodeRowsJson(builder, rows);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.GET_SINGLE: {
+                const payload = new SqlRpc.GetSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { row } = await handleGetSingle(payload);
+                const p = encodeRowJson(builder, row ?? "{}");
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.ADD_SINGLE: {
+                const payload = new SqlRpc.AddSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { rows } = await handleAddSingle(payload);
+                const p = encodeRowsJson(builder, rows);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.UPDATE_SINGLE: {
+                const payload = new SqlRpc.UpdateSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { rows } = await handleUpdateSingle(payload);
+                const p = encodeRowsJson(builder, rows);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.DELETE_ROW: {
+                const payload = new SqlRpc.DeleteRowReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { ok } = await handleDeleteRow(payload);
+                const p = encodeBool(builder, ok);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.CREATE_TABLE: {
+                const payload = new SqlRpc.CreateTableReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { ok } = await handleCreateTable(payload);
+                const p = encodeBool(builder, ok);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.TABLE_EXISTS: {
+                const payload = new SqlRpc.TableExistsReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { ok } = await handleTableExists(payload);
+                const p = encodeBool(builder, ok);
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            case SqlRpc.RpcMethod.RUN_AGGREGATION: {
+                const payload = new SqlRpc.RunAggregationReq();
+                // @ts-ignore
+                req.payload(payload);
+                const { agg } = await handleRunAggregation(payload);
+                const p = encodeAgg(builder, agg); // TODO: build real SqlSchema.DataHelperAggregation
+                respBuf = okResponse(builder, correlationId, p.off, p.type);
+                break;
+            }
+
+            default: {
+                respBuf = errResponse(
+                    builder,
+                    correlationId,
+                    SqlRpc.ErrorCode.BAD_REQUEST,
+                    `Unknown method: ${method}`
+                );
+            }
+        }
+
+        if (respBuf) {
+            const key = correlationId || "";
+            rpc.produceSafe(replyTopic, key, respBuf);
+        }
+    } catch (e: any) {
+        const msg = e?.message || String(e);
+        const errBuf = errResponse(builder, correlationId, SqlRpc.ErrorCode.INTERNAL, msg);
+        const key = correlationId || "";
+        rpc.produceSafe(replyTopic, key, errBuf);
+        // eslint-disable-next-line no-console
+        console.error("[rpc] handler error", e);
+    }
+});
+
+// ----------------------------- exported starter ---------------------------------
+
+export async function startRpcWorker() {
+    await rpc.start();
+    // eslint-disable-next-line no-console
+    console.log(
+        `[rpc] worker started: brokers=${BROKERS.join(",")} req=${REQ_TOPIC} res=${RES_TOPIC} group=${GROUP_ID}`
+    );
+}
+
+/** Optional: allow running worker directly */
+if (import.meta.url === `file://${process.argv[1]}`) {
+    startRpcWorker().catch((err) => {
+        console.error("RPC worker failed to start:", err);
+        process.exit(1);
+    });
 }

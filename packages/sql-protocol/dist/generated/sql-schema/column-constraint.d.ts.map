@@ -1,0 +1,1 @@
+{"version":3,"file":"column-constraint.d.ts","sourceRoot":"","sources":["../../../src/generated/sql-schema/column-constraint.ts"],"names":[],"mappings":"AAIA,oBAAY,gBAAgB;IAC1B,UAAU,IAAI;IACd,MAAM,IAAI;IACV,OAAO,IAAI;IACX,KAAK,IAAI;IACT,QAAQ,IAAI;IACZ,OAAO,IAAI;IACX,SAAS,IAAI;IACb,SAAS,IAAI;IACb,QAAQ,IAAI;IACZ,UAAU,IAAI;IACd,SAAS,KAAK;IACd,gBAAgB,KAAK;CACtB"}

@@ -7,14 +7,16 @@
   "type": "module",
   "scripts": {
     "build": "tsc",
-    "gen:ts": "flatc --ts -o src/rpc/generated schemas/sql/*.fbs",
+    "gen:ts": "flatc --ts -o src/rpc/generated ../../schemas/sql/*.fbs",
     "dev": "node --loader ts-node/esm src/index.ts",
     "start": "node dist/index.js"
   },
   "dependencies": {
     "@cladbe/postgres_manager": "file:../postgres_manager",
+    "@cladbe/sql-protocol": "file:../sql-protocol",
+    "@cladbe/shared-config": "file:../shared-config",
     "dotenv": "^17.2.1",
-    "flatbuffers": "^23.5.26",
+    "flatbuffers": "^25.2.10",
     "node-rdkafka": "^3.5.0"
   },
   "devDependencies": {

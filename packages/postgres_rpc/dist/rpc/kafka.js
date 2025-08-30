@@ -1,17 +1,23 @@
 // src/rpc/kafka.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import { KafkaConsumer, Producer, } from "node-rdkafka";
+// import {
+//     KafkaConsumer,
+//     Producer,
+//     LibrdKafkaError,
+//     Message,
+// } from "node-rdkafka";
+import rdkafka from "node-rdkafka";
 export class RpcKafka {
     constructor(cfg) {
         this.cfg = cfg;
-        this.producer = new Producer({
+        this.producer = new rdkafka.Producer({
             "metadata.broker.list": cfg.brokers.join(","),
             "client.id": "cladbe-postgres-rpc",
             "socket.keepalive.enable": true,
             // delivery reports disabled for simplicity; we poll to drain queue
             "dr_cb": false,
         }, {});
-        this.consumer = new KafkaConsumer({
+        this.consumer = new rdkafka.KafkaConsumer({
             "metadata.broker.list": cfg.brokers.join(","),
             "group.id": cfg.groupId,
             "enable.auto.commit": true,

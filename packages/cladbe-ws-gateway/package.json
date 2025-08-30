@@ -8,7 +8,10 @@
     "start": "node dist/main.js"
   },
   "dependencies": {
-    "node-rdkafka": "^2.18.0",
+    "@cladbe/shared-config": "file:../shared-config",
+    "@cladbe/sql-protocol": "file:../sql-protocol",
+    "flatbuffers": "^25.2.10",
+    "node-rdkafka": "^3.5.0",
     "uuid": "^9.0.1",
     "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
     "zod": "^3.23.8"

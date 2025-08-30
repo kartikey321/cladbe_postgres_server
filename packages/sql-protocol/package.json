@@ -1,0 +1,26 @@
+{
+  "name": "@cladbe/sql-protocol",
+  "version": "1.0.0",
+  "private": true,
+  "type": "commonjs",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+
+  "exports": {
+    "./generated/*": "./dist/generated/*.js",
+    "./fb_decode": "./dist/fb_decode.js",
+    "./fb_maps": "./dist/fb_maps.js",
+    ".": "./dist/index.js"
+  },
+  "scripts": {
+    "gen:ts": "flatc --ts -o src/generated ../../schemas/sql/*.fbs",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "flatbuffers": "^25.2.10"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "typescript": "^5.5.3"
+  }
+}

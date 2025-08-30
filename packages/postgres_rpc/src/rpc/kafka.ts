@@ -1,18 +1,20 @@
 // src/rpc/kafka.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-import {
-    KafkaConsumer,
-    Producer,
-    LibrdKafkaError,
-    Message,
-} from "node-rdkafka";
-
+// import {
+//     KafkaConsumer,
+//     Producer,
+//     LibrdKafkaError,
+//     Message,
+// } from "node-rdkafka";
+import rdkafka from "node-rdkafka"
 export type KafkaConfig = {
     brokers: string[];            // ["localhost:9092"]
     groupId: string;              // "cladbe-postgres-rpc"
     requestTopic: string;         // "sql.rpc.requests"
 };
-
+type Message=rdkafka.Message;
+type Producer=rdkafka.Producer;
+type KafkaConsumer=rdkafka.KafkaConsumer;
 type OnMessage = (msg: Message) => void;
 
 export class RpcKafka {
@@ -22,7 +24,7 @@ export class RpcKafka {
     private onMessage?: OnMessage;
 
     constructor(private cfg: KafkaConfig) {
-        this.producer = new Producer(
+        this.producer = new rdkafka.Producer(
             {
                 "metadata.broker.list": cfg.brokers.join(","),
                 "client.id": "cladbe-postgres-rpc",
@@ -33,7 +35,7 @@ export class RpcKafka {
             {}
         );
 
-        this.consumer = new KafkaConsumer(
+        this.consumer = new rdkafka.KafkaConsumer(
             {
                 "metadata.broker.list": cfg.brokers.join(","),
                 "group.id": cfg.groupId,
@@ -55,7 +57,7 @@ export class RpcKafka {
         await new Promise<void>((resolve, reject) => {
             this.producer
                 .on("ready", () => resolve())
-                .on("event.error", (err: LibrdKafkaError) => reject(err));
+                .on("event.error", (err: rdkafka.LibrdKafkaError) => reject(err));
             this.producer.connect();
         });
 
@@ -76,7 +78,7 @@ export class RpcKafka {
                     if (!m.value) return;
                     this.onMessage?.(m);
                 })
-                .on("event.error", (err: LibrdKafkaError) => {
+                .on("event.error", (err: rdkafka.LibrdKafkaError) => {
                     console.error("[rpc] consumer error", err);
                 })
                 .on("rebalance", (ev: unknown) => {
