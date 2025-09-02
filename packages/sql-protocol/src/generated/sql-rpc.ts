@@ -14,6 +14,7 @@ export { RequestEnvelope } from './sql-rpc/request-envelope.js';
 export { ResponseEnvelope } from './sql-rpc/response-envelope.js';
 export { RowJson } from './sql-rpc/row-json.js';
 export { RowsJson } from './sql-rpc/rows-json.js';
+export { RowsWithCursor } from './sql-rpc/rows-with-cursor.js';
 export { RpcMethod } from './sql-rpc/rpc-method.js';
 export { RpcPayload } from './sql-rpc/rpc-payload.js';
 export { RpcResponse } from './sql-rpc/rpc-response.js';

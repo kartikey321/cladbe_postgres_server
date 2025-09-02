@@ -6,6 +6,7 @@ import { AggRes } from '../sql-rpc/agg-res.js';
 import { BoolRes } from '../sql-rpc/bool-res.js';
 import { RowJson } from '../sql-rpc/row-json.js';
 import { RowsJson } from '../sql-rpc/rows-json.js';
+import { RowsWithCursor } from '../sql-rpc/rows-with-cursor.js';
 
 
 export enum RpcResponse {
@@ -13,34 +14,37 @@ export enum RpcResponse {
   RowsJson = 1,
   RowJson = 2,
   BoolRes = 3,
-  AggRes = 4
+  AggRes = 4,
+  RowsWithCursor = 5
 }
 
 export function unionToRpcResponse(
   type: RpcResponse,
-  accessor: (obj:AggRes|BoolRes|RowJson|RowsJson) => AggRes|BoolRes|RowJson|RowsJson|null
-): AggRes|BoolRes|RowJson|RowsJson|null {
+  accessor: (obj:AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor) => AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor|null
+): AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor|null {
   switch(RpcResponse[type]) {
     case 'NONE': return null; 
     case 'RowsJson': return accessor(new RowsJson())! as RowsJson;
     case 'RowJson': return accessor(new RowJson())! as RowJson;
     case 'BoolRes': return accessor(new BoolRes())! as BoolRes;
     case 'AggRes': return accessor(new AggRes())! as AggRes;
+    case 'RowsWithCursor': return accessor(new RowsWithCursor())! as RowsWithCursor;
     default: return null;
   }
 }
 
 export function unionListToRpcResponse(
   type: RpcResponse, 
-  accessor: (index: number, obj:AggRes|BoolRes|RowJson|RowsJson) => AggRes|BoolRes|RowJson|RowsJson|null, 
+  accessor: (index: number, obj:AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor) => AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor|null, 
   index: number
-): AggRes|BoolRes|RowJson|RowsJson|null {
+): AggRes|BoolRes|RowJson|RowsJson|RowsWithCursor|null {
   switch(RpcResponse[type]) {
     case 'NONE': return null; 
     case 'RowsJson': return accessor(index, new RowsJson())! as RowsJson;
     case 'RowJson': return accessor(index, new RowJson())! as RowJson;
     case 'BoolRes': return accessor(index, new BoolRes())! as BoolRes;
     case 'AggRes': return accessor(index, new AggRes())! as AggRes;
+    case 'RowsWithCursor': return accessor(index, new RowsWithCursor())! as RowsWithCursor;
     default: return null;
   }
 }

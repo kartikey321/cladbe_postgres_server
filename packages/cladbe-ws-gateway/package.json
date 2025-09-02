@@ -5,13 +5,15 @@
   "scripts": {
     "dev": "tsx src/main.ts",
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js"
+    "start": "node dist/main.js",
+    "rdkafka:install": "bash ./scripts/install-rdkafka.sh"
   },
   "dependencies": {
     "@cladbe/shared-config": "file:../shared-config",
     "@cladbe/sql-protocol": "file:../sql-protocol",
     "flatbuffers": "^25.2.10",
-    "node-rdkafka": "^3.5.0",
+    "ioredis": "^5.7.0",
+    "node-rdkafka": "file:/root/node-rdkafka",
     "uuid": "^9.0.1",
     "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
     "zod": "^3.23.8"

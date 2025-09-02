@@ -9,9 +9,10 @@ export declare abstract class DbRequest {
     get fullTableName(): string;
 }
 export declare class TableExistsRequest extends DbRequest {
-    tableName: string;
-    companyId: string;
-    constructor(tableName: string, companyId: string);
+    constructor(params: {
+        tableName: string;
+        companyId: string;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
     static fromMap(obj: Record<string, any>): TableExistsRequest;
@@ -26,12 +27,18 @@ export declare class DbResponse {
 }
 /**
  * CreateTableDbRequest
+ * Accepts the table definition object directly via params.
+ * Uses definition.name as the logical table name.
  */
 export declare class CreateTableDbRequest extends SchemaModifierRequest {
+    tableDefinition: TableDefinition;
+    constructor(params: {
+        companyId: string;
+        definition: Record<string, any>;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
-    tableDefinition: TableDefinition;
-    constructor(table: Record<string, any>);
+    static fromMap(obj: Record<string, any>): CreateTableDbRequest;
 }
 export declare abstract class FetchDbRequest extends DbRequest {
 }
@@ -62,27 +69,30 @@ export declare class AggregationRequest extends FetchDbRequest {
 }
 /**
  * GetDataDbRequest
+ * Unified params object supports both offset and keyset pagination.
  */
 export declare class GetDataDbRequest extends FetchDbRequest {
-    tableName: string;
-    companyId: string;
-    dataSort?: DataSort | undefined;
-    filters?: BaseSqlDataFilter[] | undefined;
-    limit?: number | undefined;
-    offset?: number | undefined;
-    /** NEW: multi-key order by */
-    orderKeys?: OrderKeySpec[] | undefined;
-    /** NEW: cursor for keyset pagination (field -> value) */
-    cursor?: Record<string, any> | undefined;
-    /** NEW: whether results must be strictly after cursor (default: true) */
+    dataSort?: DataSort;
+    filters?: BaseSqlDataFilter[];
+    limit?: number;
+    offset?: number;
+    /** multi-key order by */
+    orderKeys?: OrderKeySpec[];
+    /** cursor for keyset pagination (field -> value) */
+    cursor?: Record<string, any>;
+    /** whether results must be strictly after cursor (default: true) */
     strictAfter: boolean;
-    constructor(tableName: string, companyId: string, dataSort?: DataSort | undefined, filters?: BaseSqlDataFilter[] | undefined, limit?: number | undefined, offset?: number | undefined, 
-    /** NEW: multi-key order by */
-    orderKeys?: OrderKeySpec[] | undefined, 
-    /** NEW: cursor for keyset pagination (field -> value) */
-    cursor?: Record<string, any> | undefined, 
-    /** NEW: whether results must be strictly after cursor (default: true) */
-    strictAfter?: boolean);
+    constructor(params: {
+        tableName: string;
+        companyId: string;
+        dataSort?: DataSort;
+        filters?: BaseSqlDataFilter[];
+        limit?: number;
+        offset?: number;
+        orderKeys?: OrderKeySpec[];
+        cursor?: Record<string, any>;
+        strictAfter?: boolean;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
     static fromMap(obj: Record<string, any>): GetDataDbRequest;
@@ -91,11 +101,14 @@ export declare class GetDataDbRequest extends FetchDbRequest {
  * GetSingleRecordRequest
  */
 export declare class GetSingleRecordRequest extends FetchDbRequest {
-    tableName: string;
-    companyId: string;
     primaryKeyColumn: string;
     primaryId: string;
-    constructor(tableName: string, companyId: string, primaryKeyColumn: string, primaryId: string);
+    constructor(params: {
+        tableName: string;
+        companyId: string;
+        primaryKeyColumn: string;
+        primaryId: string;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
     static fromMap(obj: Record<string, any>): GetSingleRecordRequest;
@@ -106,12 +119,16 @@ export declare abstract class EditDbRequest extends DbRequest {
  * UpdateSingleDbRequest
  */
 export declare class UpdateSingleDbRequest extends EditDbRequest {
-    tableName: string;
-    companyId: string;
     updates: Record<string, any>;
     primaryKeyColumn: string;
     primaryId: string;
-    constructor(tableName: string, companyId: string, updates: Record<string, any>, primaryKeyColumn: string, primaryId: string);
+    constructor(params: {
+        tableName: string;
+        companyId: string;
+        updates: Record<string, any>;
+        primaryKeyColumn: string;
+        primaryId: string;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
     static fromMap(obj: Record<string, any>): UpdateSingleDbRequest;
@@ -122,7 +139,7 @@ export declare class UpdateSingleDbRequest extends EditDbRequest {
 export declare class DeleteRowDbRequest extends EditDbRequest {
     primaryKeyColumn: string;
     primaryId: string;
-    constructor({ tableName, companyId, primaryKeyColumn, primaryId }: {
+    constructor(params: {
         tableName: string;
         companyId: string;
         primaryKeyColumn: string;
@@ -137,11 +154,14 @@ export declare class DeleteRowDbRequest extends EditDbRequest {
  * AddSingleDbRequest
  */
 export declare class AddSingleDbRequest extends EditDbRequest {
-    tableName: string;
-    companyId: string;
     primaryKeyColumn: string;
     data: Record<string, any>;
-    constructor(tableName: string, companyId: string, primaryKeyColumn: string, data: Record<string, any>);
+    constructor(params: {
+        tableName: string;
+        companyId: string;
+        primaryKeyColumn: string;
+        data: Record<string, any>;
+    });
     getRequestName(): keyof RequestResponseMap;
     toMap(): Record<string, any>;
     static fromMap(obj: Record<string, any>): AddSingleDbRequest;

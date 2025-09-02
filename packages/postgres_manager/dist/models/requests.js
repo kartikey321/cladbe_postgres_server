@@ -22,24 +22,20 @@ class DbRequest {
 }
 exports.DbRequest = DbRequest;
 class TableExistsRequest extends DbRequest {
-    tableName;
-    companyId;
-    constructor(tableName, companyId) {
-        super(tableName, companyId);
-        this.tableName = tableName;
-        this.companyId = companyId;
+    constructor(params) {
+        super(params.tableName, params.companyId);
     }
     getRequestName() {
-        return 'TableExistsDbRequest';
+        return "TableExistsDbRequest";
     }
     toMap() {
         return {
-            'tableName': this.tableName,
-            'companyId': this.companyId
+            tableName: this.tableName,
+            companyId: this.companyId
         };
     }
     static fromMap(obj) {
-        return new TableExistsRequest(obj.tableName, obj.companyId);
+        return new TableExistsRequest({ tableName: obj.tableName, companyId: obj.companyId });
     }
 }
 exports.TableExistsRequest = TableExistsRequest;
@@ -66,18 +62,28 @@ class DbResponse {
 exports.DbResponse = DbResponse;
 /**
  * CreateTableDbRequest
+ * Accepts the table definition object directly via params.
+ * Uses definition.name as the logical table name.
  */
 class CreateTableDbRequest extends SchemaModifierRequest {
+    tableDefinition;
+    constructor(params) {
+        super(params.definition?.name, params.companyId);
+        this.tableDefinition = table_definition_1.TableDefinition.fromMap(params.definition);
+    }
     getRequestName() {
-        return 'CreateTableRequest';
+        return "CreateTableRequest";
     }
     toMap() {
+        // Preserving your prior behavior: emit only the definition map.
         return this.tableDefinition.toMap();
     }
-    tableDefinition;
-    constructor(table) {
-        super(table.definition.name, table.companyId);
-        this.tableDefinition = table_definition_1.TableDefinition.fromMap(table.definition);
+    static fromMap(obj) {
+        // Backward compatible with earlier shape: { companyId, definition: {...} }
+        return new CreateTableDbRequest({
+            companyId: obj.companyId,
+            definition: obj.definition
+        });
     }
 }
 exports.CreateTableDbRequest = CreateTableDbRequest;
@@ -106,7 +112,7 @@ class AggregationRequest extends FetchDbRequest {
         this.maximumFields = params.maximumFields ?? [];
     }
     getRequestName() {
-        return 'DataHelperAggregationRequest';
+        return "DataHelperAggregationRequest";
     }
     toMap() {
         return {
@@ -117,7 +123,7 @@ class AggregationRequest extends FetchDbRequest {
             averageFields: this.averageFields,
             filters: this.filters,
             minimumFields: this.minimumFields,
-            maximumFields: this.maximumFields,
+            maximumFields: this.maximumFields
         };
     }
     static fromMap(obj) {
@@ -129,41 +135,35 @@ class AggregationRequest extends FetchDbRequest {
             countEnabled: obj.countEnabled,
             filters: obj.filters,
             minimumFields: obj.minimumFields,
-            maximumFields: obj.maximumFields,
+            maximumFields: obj.maximumFields
         });
     }
 }
 exports.AggregationRequest = AggregationRequest;
 /**
  * GetDataDbRequest
+ * Unified params object supports both offset and keyset pagination.
  */
 class GetDataDbRequest extends FetchDbRequest {
-    tableName;
-    companyId;
     dataSort;
     filters;
     limit;
     offset;
+    /** multi-key order by */
     orderKeys;
+    /** cursor for keyset pagination (field -> value) */
     cursor;
+    /** whether results must be strictly after cursor (default: true) */
     strictAfter;
-    constructor(tableName, companyId, dataSort, filters, limit, offset, 
-    /** NEW: multi-key order by */
-    orderKeys, 
-    /** NEW: cursor for keyset pagination (field -> value) */
-    cursor, 
-    /** NEW: whether results must be strictly after cursor (default: true) */
-    strictAfter = true) {
-        super(tableName, companyId);
-        this.tableName = tableName;
-        this.companyId = companyId;
-        this.dataSort = dataSort;
-        this.filters = filters;
-        this.limit = limit;
-        this.offset = offset;
-        this.orderKeys = orderKeys;
-        this.cursor = cursor;
-        this.strictAfter = strictAfter;
+    constructor(params) {
+        super(params.tableName, params.companyId);
+        this.dataSort = params.dataSort;
+        this.filters = params.filters;
+        this.limit = params.limit;
+        this.offset = params.offset;
+        this.orderKeys = params.orderKeys;
+        this.cursor = params.cursor;
+        this.strictAfter = params.strictAfter ?? true;
     }
     getRequestName() {
         return "GetDataDbRequest";
@@ -182,7 +182,17 @@ class GetDataDbRequest extends FetchDbRequest {
         };
     }
     static fromMap(obj) {
-        return new GetDataDbRequest(obj.tableName, obj.companyId, obj.dataSort, obj.filters, obj.limit, obj.offset, obj.orderKeys, obj.cursor, obj.strictAfter ?? true);
+        return new GetDataDbRequest({
+            tableName: obj.tableName,
+            companyId: obj.companyId,
+            dataSort: obj.dataSort,
+            filters: obj.filters,
+            limit: obj.limit,
+            offset: obj.offset,
+            orderKeys: obj.orderKeys,
+            cursor: obj.cursor,
+            strictAfter: obj.strictAfter
+        });
     }
 }
 exports.GetDataDbRequest = GetDataDbRequest;
@@ -190,16 +200,12 @@ exports.GetDataDbRequest = GetDataDbRequest;
  * GetSingleRecordRequest
  */
 class GetSingleRecordRequest extends FetchDbRequest {
-    tableName;
-    companyId;
     primaryKeyColumn;
     primaryId;
-    constructor(tableName, companyId, primaryKeyColumn, primaryId) {
-        super(tableName, companyId);
-        this.tableName = tableName;
-        this.companyId = companyId;
-        this.primaryKeyColumn = primaryKeyColumn;
-        this.primaryId = primaryId;
+    constructor(params) {
+        super(params.tableName, params.companyId);
+        this.primaryKeyColumn = params.primaryKeyColumn;
+        this.primaryId = params.primaryId;
     }
     getRequestName() {
         return "GetSingleRecordRequest";
@@ -213,7 +219,12 @@ class GetSingleRecordRequest extends FetchDbRequest {
         };
     }
     static fromMap(obj) {
-        return new GetSingleRecordRequest(obj.tableName, obj.companyId, obj.primaryKeyColumn, obj.primaryId);
+        return new GetSingleRecordRequest({
+            tableName: obj.tableName,
+            companyId: obj.companyId,
+            primaryKeyColumn: obj.primaryKeyColumn,
+            primaryId: obj.primaryId
+        });
     }
 }
 exports.GetSingleRecordRequest = GetSingleRecordRequest;
@@ -224,18 +235,14 @@ exports.EditDbRequest = EditDbRequest;
  * UpdateSingleDbRequest
  */
 class UpdateSingleDbRequest extends EditDbRequest {
-    tableName;
-    companyId;
     updates;
     primaryKeyColumn;
     primaryId;
-    constructor(tableName, companyId, updates, primaryKeyColumn, primaryId) {
-        super(tableName, companyId);
-        this.tableName = tableName;
-        this.companyId = companyId;
-        this.updates = updates;
-        this.primaryKeyColumn = primaryKeyColumn;
-        this.primaryId = primaryId;
+    constructor(params) {
+        super(params.tableName, params.companyId);
+        this.updates = params.updates;
+        this.primaryKeyColumn = params.primaryKeyColumn;
+        this.primaryId = params.primaryId;
     }
     getRequestName() {
         return "UpdateSingleDbRequest";
@@ -250,7 +257,13 @@ class UpdateSingleDbRequest extends EditDbRequest {
         };
     }
     static fromMap(obj) {
-        return new UpdateSingleDbRequest(obj.tableName, obj.companyId, obj.updates, obj.primaryKeyColumn, obj.primaryId);
+        return new UpdateSingleDbRequest({
+            tableName: obj.tableName,
+            companyId: obj.companyId,
+            updates: obj.updates,
+            primaryKeyColumn: obj.primaryKeyColumn,
+            primaryId: obj.primaryId
+        });
     }
 }
 exports.UpdateSingleDbRequest = UpdateSingleDbRequest;
@@ -260,13 +273,13 @@ exports.UpdateSingleDbRequest = UpdateSingleDbRequest;
 class DeleteRowDbRequest extends EditDbRequest {
     primaryKeyColumn;
     primaryId;
-    constructor({ tableName, companyId, primaryKeyColumn, primaryId }) {
-        super(tableName, companyId);
-        this.primaryKeyColumn = primaryKeyColumn;
-        this.primaryId = primaryId;
+    constructor(params) {
+        super(params.tableName, params.companyId);
+        this.primaryKeyColumn = params.primaryKeyColumn;
+        this.primaryId = params.primaryId;
     }
     getRequestName() {
-        return 'DeleteRowDbRequest';
+        return "DeleteRowDbRequest";
     }
     getFilters() {
         return [
@@ -277,17 +290,17 @@ class DeleteRowDbRequest extends EditDbRequest {
                 modifier: {
                     distinct: true,
                     caseInSensitive: false,
-                    nullsOrder: filters_1.NullsSortOrder.default_,
+                    nullsOrder: filters_1.NullsSortOrder.default_
                 }
             },
             {
-                fieldName: 'companyId',
+                fieldName: "companyId",
                 value: this.companyId,
                 filterType: filters_1.SQLDataFilterType.equals,
                 modifier: {
                     distinct: true,
                     caseInSensitive: false,
-                    nullsOrder: filters_1.NullsSortOrder.default_,
+                    nullsOrder: filters_1.NullsSortOrder.default_
                 }
             }
         ];
@@ -314,16 +327,12 @@ exports.DeleteRowDbRequest = DeleteRowDbRequest;
  * AddSingleDbRequest
  */
 class AddSingleDbRequest extends EditDbRequest {
-    tableName;
-    companyId;
     primaryKeyColumn;
     data;
-    constructor(tableName, companyId, primaryKeyColumn, data) {
-        super(tableName, companyId);
-        this.tableName = tableName;
-        this.companyId = companyId;
-        this.primaryKeyColumn = primaryKeyColumn;
-        this.data = data;
+    constructor(params) {
+        super(params.tableName, params.companyId);
+        this.primaryKeyColumn = params.primaryKeyColumn;
+        this.data = params.data;
     }
     getRequestName() {
         return "AddSingleDbRequest";
@@ -337,7 +346,12 @@ class AddSingleDbRequest extends EditDbRequest {
         };
     }
     static fromMap(obj) {
-        return new AddSingleDbRequest(obj.tableName, obj.companyId, obj.primaryKeyColumn, obj.data);
+        return new AddSingleDbRequest({
+            tableName: obj.tableName,
+            companyId: obj.companyId,
+            primaryKeyColumn: obj.primaryKeyColumn,
+            data: obj.data
+        });
     }
 }
 exports.AddSingleDbRequest = AddSingleDbRequest;

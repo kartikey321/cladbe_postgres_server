@@ -6,7 +6,14 @@
     "packages/*"
   ],
   "scripts": {
-
+    "start:infra": "cd ../cdc-stack && docker-compose up -d",
+    "start:apps": "docker-compose -f docker-compose.apps.yml up -d --build",
+    "start:all": "npm run start:infra && npm run start:apps",
+    "stop:infra": "cd ../cdc-stack && docker-compose down",
+    "stop:apps": "docker-compose -f docker-compose.apps.yml down",
+    "stop:all": "npm run stop:apps && npm run stop:infra",
+    "logs:apps": "docker-compose -f docker-compose.apps.yml logs -f",
+    "logs:infra": "cd ../cdc-stack && docker-compose logs -f"
   },
   "devDependencies": {
     "typescript": "^5.5.3"

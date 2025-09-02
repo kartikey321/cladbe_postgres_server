@@ -34,9 +34,39 @@ class PostgresManager {
         return PostgresManager.instance;
     }
     async getData(request) {
-        let query = this.queryProcessor.buildQuery(request);
-        console.log(query.toQuery());
-        return request instanceof requests_1.GetDataDbRequest ? query.select('*') : query.select('*').first();
+        // Non-collection requests keep old behavior
+        if (!(request instanceof requests_1.GetDataDbRequest)) {
+            let query = this.queryProcessor.buildQuery(request);
+            console.log(query.toQuery());
+            return query.select("*").first();
+        }
+        // Collection requests: snapshot + fence LSN in a REPEATABLE READ tx
+        return await this.knex.transaction(async (trx) => {
+            // 1) Fence snapshot at tx start
+            await trx.raw('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
+            // 2) Capture LSN under this txn so the snapshot is fixed
+            const fenceRow = await trx
+                .raw(`SELECT pg_current_wal_lsn()::text AS lsn`)
+                .then((r) => (Array.isArray(r.rows) ? r.rows[0] : r[0]));
+            const fence = fenceRow?.lsn || null;
+            // 3) Build & run query inside the same txn
+            let query = this.queryProcessor.buildQuery(request).transacting(trx);
+            console.log(query.toQuery());
+            const rows = await query.select('*');
+            // 4) Derive next-page cursor from last row (if orderKeys)
+            let cursor;
+            if (Array.isArray(request.orderKeys) && request.orderKeys.length && rows.length) {
+                const last = rows[rows.length - 1];
+                cursor = {};
+                for (const ok of request.orderKeys) {
+                    cursor[ok.field] = last[ok.field];
+                }
+            }
+            // Always include fence LSN so the gateway can resume CDC safely
+            cursor = { ...(cursor || {}), ...(fence ? { lsn: fence } : {}) };
+            return { rows, cursor };
+        }, { isolationLevel: 'repeatable read' } // if TS complains, use the raw SET above (kept anyway)
+        );
     }
     async editData(request) {
         let query = this.queryProcessor.buildQuery(request);

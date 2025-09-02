@@ -4,12 +4,27 @@ import pkg from 'node-rdkafka';
 const { KafkaConsumer } = pkg;
 import type { LibrdKafkaError, Message } from 'node-rdkafka';
 
+/**
+ * Callbacks used by the CDC Kafka consumer to integrate with the gateway.
+ *
+ * Why: Decouples wire-level consumption from business logic (fan-out, metrics, etc.).
+ * How it fits: `onMessage` hands off raw change events to delivery, while error/rebalance
+ * hooks surface operational signals to logs and control flow (pause/resume).
+ */
 export type KafkaHandlers = {
     onMessage: (key: string, value: Buffer, raw: Message) => void;
     onError?: (err: LibrdKafkaError) => void;
     onRebalance?: (ev: any) => void;
 };
 
+/**
+ * GatewayConsumer
+ *
+ * Thin wrapper around node-rdkafka to consume CDC topics with sensible throughput
+ * defaults. Exposes `pauseAll`/`resumeAll` to implement coarse backpressure: the
+ * gateway pauses reading from Kafka when too many sockets are slow to avoid
+ * unbounded buffering and heap growth.
+ */
 export class GatewayConsumer {
     private consumer: any; // KafkaConsumer type
     private paused = false;
@@ -37,6 +52,7 @@ export class GatewayConsumer {
         );
     }
 
+    /** Connects, subscribes to topics, and begins message consumption. */
     start() {
         this.consumer
             .on('ready', () => {
@@ -67,6 +83,7 @@ export class GatewayConsumer {
         this.consumer.connect();
     }
 
+    /** Pauses all current assignments; used when slow sockets exceed threshold. */
     pauseAll() {
         if (this.paused) return;
         const asg = this.consumer.assignments();
@@ -76,6 +93,7 @@ export class GatewayConsumer {
         }
     }
 
+    /** Resumes all current assignments once pressure subsides. */
     resumeAll() {
         if (!this.paused) return;
         const asg = this.consumer.assignments();
@@ -85,6 +103,7 @@ export class GatewayConsumer {
         }
     }
 
+    /** Gracefully disconnects the consumer. */
     stop() {
         try { this.consumer.disconnect(); } catch {}
     }

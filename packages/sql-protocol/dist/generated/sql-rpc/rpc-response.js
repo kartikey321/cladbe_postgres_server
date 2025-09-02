@@ -9,6 +9,7 @@ const agg_res_js_1 = require("../sql-rpc/agg-res.js");
 const bool_res_js_1 = require("../sql-rpc/bool-res.js");
 const row_json_js_1 = require("../sql-rpc/row-json.js");
 const rows_json_js_1 = require("../sql-rpc/rows-json.js");
+const rows_with_cursor_js_1 = require("../sql-rpc/rows-with-cursor.js");
 var RpcResponse;
 (function (RpcResponse) {
     RpcResponse[RpcResponse["NONE"] = 0] = "NONE";
@@ -16,6 +17,7 @@ var RpcResponse;
     RpcResponse[RpcResponse["RowJson"] = 2] = "RowJson";
     RpcResponse[RpcResponse["BoolRes"] = 3] = "BoolRes";
     RpcResponse[RpcResponse["AggRes"] = 4] = "AggRes";
+    RpcResponse[RpcResponse["RowsWithCursor"] = 5] = "RowsWithCursor";
 })(RpcResponse || (exports.RpcResponse = RpcResponse = {}));
 function unionToRpcResponse(type, accessor) {
     switch (RpcResponse[type]) {
@@ -24,6 +26,7 @@ function unionToRpcResponse(type, accessor) {
         case 'RowJson': return accessor(new row_json_js_1.RowJson());
         case 'BoolRes': return accessor(new bool_res_js_1.BoolRes());
         case 'AggRes': return accessor(new agg_res_js_1.AggRes());
+        case 'RowsWithCursor': return accessor(new rows_with_cursor_js_1.RowsWithCursor());
         default: return null;
     }
 }
@@ -34,6 +37,7 @@ function unionListToRpcResponse(type, accessor, index) {
         case 'RowJson': return accessor(index, new row_json_js_1.RowJson());
         case 'BoolRes': return accessor(index, new bool_res_js_1.BoolRes());
         case 'AggRes': return accessor(index, new agg_res_js_1.AggRes());
+        case 'RowsWithCursor': return accessor(index, new rows_with_cursor_js_1.RowsWithCursor());
         default: return null;
     }
 }

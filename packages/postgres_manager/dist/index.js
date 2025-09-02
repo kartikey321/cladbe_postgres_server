@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SQLDataType = exports.ColumnConstraint = exports.OrderSort = exports.NullsSortOrder = exports.SQLDataFilterType = exports.SQLFilterWrapperType = exports.SchemaModifierRequest = exports.CreateTableDbRequest = exports.AggregationRequest = exports.DbResponse = exports.AddSingleDbRequest = exports.UpdateSingleDbRequest = exports.EditDbRequest = exports.GetSingleRecordRequest = exports.GetDataDbRequest = exports.FetchDbRequest = exports.DbRequest = exports.QueryProcessor = exports.PostgresManager = void 0;
+exports.SQLDataType = exports.ColumnConstraint = exports.OrderSort = exports.NullsSortOrder = exports.SQLDataFilterType = exports.SQLFilterWrapperType = exports.TableExistsRequest = exports.DeleteRowDbRequest = exports.SchemaModifierRequest = exports.CreateTableDbRequest = exports.AggregationRequest = exports.DbResponse = exports.AddSingleDbRequest = exports.UpdateSingleDbRequest = exports.EditDbRequest = exports.GetSingleRecordRequest = exports.GetDataDbRequest = exports.FetchDbRequest = exports.DbRequest = exports.QueryProcessor = exports.PostgresManager = void 0;
 var postgress_manager_1 = require("./helpers/postgress_manager");
 Object.defineProperty(exports, "PostgresManager", { enumerable: true, get: function () { return postgress_manager_1.PostgresManager; } });
 var query_builder_1 = require("./helpers/query_builder");
@@ -17,6 +17,8 @@ Object.defineProperty(exports, "DbResponse", { enumerable: true, get: function (
 Object.defineProperty(exports, "AggregationRequest", { enumerable: true, get: function () { return requests_1.AggregationRequest; } });
 Object.defineProperty(exports, "CreateTableDbRequest", { enumerable: true, get: function () { return requests_1.CreateTableDbRequest; } });
 Object.defineProperty(exports, "SchemaModifierRequest", { enumerable: true, get: function () { return requests_1.SchemaModifierRequest; } });
+Object.defineProperty(exports, "DeleteRowDbRequest", { enumerable: true, get: function () { return requests_1.DeleteRowDbRequest; } });
+Object.defineProperty(exports, "TableExistsRequest", { enumerable: true, get: function () { return requests_1.TableExistsRequest; } });
 var filters_1 = require("./models/filters/filters");
 Object.defineProperty(exports, "SQLFilterWrapperType", { enumerable: true, get: function () { return filters_1.SQLFilterWrapperType; } });
 Object.defineProperty(exports, "SQLDataFilterType", { enumerable: true, get: function () { return filters_1.SQLDataFilterType; } });

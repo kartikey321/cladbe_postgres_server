@@ -1,3 +1,6 @@
+// types-ext.d.ts
+// Lightweight ambient typings for node-rdkafka (subset we use) to improve DX
+// when community types are unavailable or incomplete.
 // declare module 'node-rdkafka' {
 //     // Minimal surface we use; you can replace with community types
 //     export interface Message {

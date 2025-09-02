@@ -8,6 +8,11 @@
 // } from "node-rdkafka";
 import rdkafka from "node-rdkafka";
 export class RpcKafka {
+    cfg;
+    producer;
+    consumer;
+    pollTimer;
+    onMessage;
     constructor(cfg) {
         this.cfg = cfg;
         this.producer = new rdkafka.Producer({

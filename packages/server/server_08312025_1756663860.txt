@@ -1,0 +1,919 @@
+Project Overview
+===============
+
+Project Statistics:
+Total Files: 8
+Total Size: 21.21 KB
+
+File Types:
+  .js: 2 files
+  .json: 2 files
+  no extension: 1 files
+  .sh: 1 files
+  .md: 1 files
+  .ts: 1 files
+
+Detected Technologies:
+  - TypeScript
+
+Folder Structure (Tree)
+=====================
+Legend: ✓ = Included in output, ✗ = Excluded from output
+
+├── .gitignore (48 B) ✓
+├── build_and_restart.sh (280 B) ✓
+├── ecosystem.config.js (2.25 KB) ✓
+├── package.json (511 B) ✓
+├── readme.md (10.00 KB) ✓
+├── scale.js (3.21 KB) ✓
+├── src/
+│   └── index.ts (4.79 KB) ✓
+├── tsconfig.json (148 B) ✓
+
+==============
+
+File Name: .gitignore
+Size: 48 B
+Code:
+package-lock.json
+dist
+.env
+tsconfig.tsbuildinfo
+-------- [ Separator ] ------
+
+File Name: build_and_restart.sh
+Size: 280 B
+Code:
+#!/bin/bash
+
+echo "Building TypeScript files..."
+npm run build
+
+if [ $? -eq 0 ]; then
+  echo "Build successful. Restarting PM2 process cladbe_postgres_server..."
+  pm2 restart cladbe_postgres_server
+  echo "Restart done."
+else
+  echo "Build failed. PM2 process not restarted."
+fi
+
+-------- [ Separator ] ------
+
+File Name: ecosystem.config.js
+Size: 2.25 KB
+Code:
+module.exports = {
+    apps: [
+        {
+            name: 'cladbe_postgres_server',
+            cwd: "./packages/server",
+            script: './dist/index.js',
+            instances: 1,
+            exec_mode: 'cluster',
+            env: {
+                NODE_ENV: 'production',
+                PORT: 7500,
+            },
+            wait_ready: true,
+            listen_timeout: 10000,
+            kill_timeout: 3000,
+            max_memory_restart: '300M',
+        },
+        {
+            name: "cladbe-ws-gateway",
+            cwd: "./packages/cladbe-ws-gateway",
+            script: "dist/main.js",                 // built by `npm run build`
+            exec_mode: "fork",
+            instances: 1,                           // uWS binds a port: keep 1 per port
+            watch: false,
+            autorestart: true,
+            max_memory_restart: "300M",
+            time: true,
+            env: {
+                NODE_ENV: "production",
+                // gateway env
+                WS_PORT: "7000",
+                KAFKA_BROKERS: "localhost:9092",
+                KAFKA_GROUP: "cladbe-ws-gateway",
+                KAFKA_TOPICS: "server.cdc.filtered"
+            },
+            merge_logs: true,
+            out_file: "/var/log/pm2/cladbe-ws-gateway.out.log",
+            error_file: "/var/log/pm2/cladbe-ws-gateway.err.log",
+            log_date_format: "YYYY-MM-DD HH:mm:ss Z"
+        },
+        {
+            name: "postgres-rpc",
+            cwd: "/opt/cladbe/postgres_rpc",
+            script: "dist/index.js",                // built by `npm run build`
+            exec_mode: "fork",
+            instances: 1,
+            watch: false,
+            autorestart: true,
+            max_memory_restart: "350M",
+            time: true,
+            env: {
+                NODE_ENV: "production",
+                // rpc env
+                KAFKA_BROKERS: "localhost:9092",
+                SQL_RPC_REQUEST_TOPIC: "sql.rpc.requests",
+                SQL_RPC_RESPONSE_TOPIC: "sql.rpc.responses",
+                SQL_RPC_GROUP_ID: "cladbe-postgres-rpc"
+            },
+            merge_logs: true,
+            out_file: "/var/log/pm2/postgres-rpc.out.log",
+            error_file: "/var/log/pm2/postgres-rpc.err.log",
+            log_date_format: "YYYY-MM-DD HH:mm:ss Z"
+        }
+    ],
+};
+
+-------- [ Separator ] ------
+
+File Name: package.json
+Size: 511 B
+Code:
+{
+  "name": "@cladbe/server",
+  "version": "1.0.0",
+  "main": "dist/index.js",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "ts-node src/index.ts",
+    "restart-server": "./build_and_restart.sh"
+  },
+  "dependencies": {
+    "hono": "^4.8.10",
+    "@hono/node-server": "^1.18.0",
+    "pm2": "^6.0.8",
+    "@cladbe/postgres_manager": "file:../postgres_manager"
+  },
+  "devDependencies": {
+    "@types/node": "^24.1.0",
+    "typescript": "^5.5.3",
+    "ts-node": "^10.9.2"
+  }
+}
+-------- [ Separator ] ------
+
+File Name: readme.md
+Size: 10.00 KB
+Code:
+# Cladbe Postgres Server
+
+A lightweight HTTP layer over `@cladbe/postgres_manager` providing CRUD-ish data access, schema creation and aggregations.
+
+## Overview
+
+- **Framework**: Hono
+- **Default port**: 3000 (override with `PORT` environment variable)
+- **Health check**: `GET /health`
+
+## Environment Configuration
+
+### PostgreSQL Connection
+
+The server depends on PostgreSQL connection environment variables consumed by `@cladbe/postgres_manager`:
+
+```bash
+PGHOST=localhost
+PGUSER=postgres
+PGPASSWORD=postgres
+PGDATABASE=postgres
+PGPORT=5432
+```
+
+```
+
+### Server Configuration
+
+```bash
+PORT=3000
+NODE_ENV=production|development
+```
+
+## Error Format
+
+All routes return JSON errors in the following format:
+
+```json
+{
+  "error": "Failed to retrieve data",
+  "message": "Detailed error message",
+  "stack": "stack only in development"
+}
+```
+
+## API Routes
+
+### Basic Routes
+
+#### `GET /`
+Basic ping endpoint.
+- **Response**: `text/plain` → `Hello, Hono with TypeScript and PM2!`
+
+#### `GET /api`
+API status endpoint.
+- **Response**:
+```json
+{ "message": "Scalable Hono API" }
+```
+
+#### `GET /health`
+Health check endpoint.
+- **Response**:
+```json
+{ "status": "ok" }
+```
+
+## Data APIs
+
+All POST routes expect `Content-Type: application/json` and respond with:
+```json
+{ "data": "<payload-specific>" }
+```
+
+### 1. Fetch Data Collection — Keyset Pagination Supported
+
+**`POST /get-data`**
+
+Fetch a collection of rows with optional filters and ordering.
+This endpoint now supports keyset pagination via `orderKeys` + `cursor` (+ `strictAfter`).
+
+**Request Body** (`GetDataDbRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme",
+
+  // optional: filter tree (AND/OR + leaves)
+  "filters": [
+    {
+      "fieldName": "status",
+      "value": "open",
+      "filterType": "equals",
+      "modifier": { 
+        "distinct": false, 
+        "caseInSensitive": false, 
+        "nullsOrder": "default" 
+      }
+    }
+  ],
+
+  // EITHER keyset or offset pagination
+  // --- KEYSET (preferred) ---
+  "orderKeys": [
+    { "field": "created_at", "sort": "DESC_DEFAULT" },
+    { "field": "id", "sort": "DESC_DEFAULT" }                 // PK should be final tie-breaker
+  ],
+  "cursor": {
+    "created_at": "2025-08-26T10:00:00.000Z",
+    "id": "f1f9b662-86b7-4e65-9e54-0f0a33b6b8a0"
+  },
+  "strictAfter": true,     // default true; use strict "<" or ">" on boundary key
+
+  // --- LIMIT ---
+  "limit": 50
+
+  // --- OFFSET (legacy; not with cursor) ---
+  // "offset": 0
+}
+```
+
+**Response**:
+```json
+{
+  "data": [
+    {
+      "id": 1,
+      "status": "open",
+      "amount": 120.5
+    }
+  ]
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/get-data \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "tableName":"orders",
+    "companyId":"acme",
+    "filters":[{
+      "fieldName":"status",
+      "value":"open",
+      "filterType":"equals",
+      "modifier":{"caseInSensitive":false,"nullsOrder":"default"}
+    }],
+    "limit":25,
+    "orderKeys":[{"field":"created_at","sort":"DESC_DEFAULT"}]
+  }'
+```
+
+### 2. Fetch Single Record
+
+**`POST /get-single-record`**
+
+Fetch one row by primary key.
+
+**Request Body** (`GetSingleRecordRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme",
+  "primaryKeyColumn": "id",
+  "primaryId": "12345"
+}
+```
+
+**Response**:
+```json
+{
+  "data": {
+    "id": "12345",
+    "status": "open"
+  }
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/get-single-record \
+  -H 'Content-Type: application/json' \
+  -d '{"tableName":"orders","companyId":"acme","primaryKeyColumn":"id","primaryId":"12345"}'
+```
+
+### 3. Add Single Record
+
+**`POST /add-single-record`**
+
+Insert one row.
+
+**Request Body** (`AddSingleDbRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme",
+  "primaryKeyColumn": "id",
+  "data": {
+    "id": "12345",
+    "status": "open",
+    "amount": 120.5,
+    "meta": { "source": "web" }
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "data": [
+    {
+      "id": "12345",
+      "status": "open",
+      "amount": 120.5,
+      "meta": {"source": "web"}
+    }
+  ]
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/add-single-record \
+  -H 'Content-Type: application/json' \
+  -d '{"tableName":"orders","companyId":"acme","primaryKeyColumn":"id","data":{"id":"12345","status":"open","amount":120.5}}'
+```
+
+### 4. Update Single Record
+
+**`POST /update-single-record`**
+
+Update one row by primary key.
+
+**Request Body** (`UpdateSingleDbRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme",
+  "primaryKeyColumn": "id",
+  "primaryId": "12345",
+  "updates": {
+    "status": "closed",
+    "closed_at": "2025-08-26T10:00:00Z"
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "data": [
+    {
+      "id": "12345",
+      "status": "closed",
+      "closed_at": "2025-08-26T10:00:00.000Z"
+    }
+  ]
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/update-single-record \
+  -H 'Content-Type: application/json' \
+  -d '{"tableName":"orders","companyId":"acme","primaryKeyColumn":"id","primaryId":"12345","updates":{"status":"closed"}}'
+```
+
+### 5. Check Table Existence
+
+**`POST /table-exists`**
+
+Check if a namespaced table exists (`<companyId>_<tableName>`).
+
+**Request Body** (`TableExistsRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme"
+}
+```
+
+**Response**:
+```json
+{
+  "data": true
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/table-exists \
+  -H 'Content-Type: application/json' \
+  -d '{"tableName":"orders","companyId":"acme"}'
+```
+
+### 6. Create Table
+
+**`POST /create-table`**
+
+Create a table using a TableDefinition. The server automatically prefixes with `companyId_`.
+
+**Request Body** (`CreateTableDbRequest`):
+```json
+{
+  "companyId": "acme",
+  "definition": {
+    "name": "orders",
+    "columns": [
+      {
+        "name": "id",
+        "dataType": "uuid",
+        "isNullable": false,
+        "constraints": ["primaryKey"]
+      },
+      {
+        "name": "status",
+        "dataType": "varchar",
+        "isNullable": false,
+        "constraints": ["indexed"],
+        "customOptions": { "length": 64 }
+      },
+      {
+        "name": "amount",
+        "dataType": "numeric",
+        "isNullable": true,
+        "constraints": []
+      },
+      {
+        "name": "meta",
+        "dataType": "jsonb",
+        "isNullable": true,
+        "constraints": []
+      },
+      {
+        "name": "created_at",
+        "dataType": "timestamptz",
+        "isNullable": false,
+        "constraints": ["default_"],
+        "customOptions": { "defaultValue": "CURRENT_TIMESTAMP" }
+      }
+    ],
+    "comment": "Orders table",
+    "tableOptions": {}
+  }
+}
+```
+
+**Response**:
+```json
+{
+  "data": true
+}
+```
+
+### 7. Run Aggregation
+
+**`POST /run-aggregation`**
+
+Run sum/avg/min/max/count operations with optional filters.
+
+**Request Body** (`AggregationRequest`):
+```json
+{
+  "tableName": "orders",
+  "companyId": "acme",
+  "sumFields": ["amount"],
+  "averageFields": ["amount"],
+  "minimumFields": ["amount"],
+  "maximumFields": ["amount"],
+  "countEnabled": true,
+  "filters": [
+    {
+      "fieldName": "status",
+      "value": "closed",
+      "filterType": "equals",
+      "modifier": {
+        "caseInSensitive": false,
+        "nullsOrder": "default"
+      }
+    }
+  ]
+}
+```
+
+**Response**:
+```json
+{
+  "data": {
+    "count": 123,
+    "sumValues": { "amount": 10234.5 },
+    "avgValues": { "amount": 83.22 },
+    "minimumValues": { "amount": 1.5 },
+    "maximumValues": { "amount": 1200.0 }
+  }
+}
+```
+
+**cURL Example**:
+```bash
+curl -X POST http://localhost:3000/run-aggregation \
+  -H 'Content-Type: application/json' \
+  -d '{"tableName":"orders","companyId":"acme","sumFields":["amount"],"countEnabled":true}'
+```
+
+## Filtering Guide
+
+### Single Filter Structure
+```json
+{
+  "fieldName": "status",
+  "value": "open",
+  "filterType": "equals",
+  "modifier": {
+    "distinct": false,
+    "caseInSensitive": false,
+    "nullsOrder": "default"
+  }
+}
+```
+
+### Filter Wrapper (Combining Filters)
+```json
+{
+  "filterWrapperType": "and",
+  "filters": [
+    {
+      "fieldName": "amount",
+      "value": [100, 500],
+      "filterType": "between",
+      "modifier": {
+        "caseInSensitive": false,
+        "nullsOrder": "default"
+      }
+    },
+    {
+      "fieldName": "status",
+      "value": ["open", "review"],
+      "filterType": "in",
+      "modifier": {
+        "caseInSensitive": false,
+        "nullsOrder": "default"
+      }
+    }
+  ]
+}
+```
+
+### Supported Filter Types
+- `equals` | `notEquals`
+- `isNull` | `isNotNull`
+- `startsWith` | `endsWith` | `contains`
+- `between` | `notBetween`
+- `in` | `notIn`
+- `regex` | `notRegex`
+
+### Sorting Options
+
+When using the `orderKeys` array (preferred method):
+
+```json
+"orderKeys": [
+  { "field": "created_at", "sort": "DESC_DEFAULT" },
+  { "field": "amount", "sort": "ASC_NULLS_LAST" }
+]
+```
+
+**Available sort options:**
+- `ASC_DEFAULT` | `ASC_NULLS_FIRST` | `ASC_NULLS_LAST`
+- `DESC_DEFAULT` | `DESC_NULLS_FIRST` | `DESC_NULLS_LAST`
+
+## Keyset Pagination & Sorting Recap
+
+- **Prefer** `orderKeys` over legacy `dataSort`
+- **Ensure** the last `orderKeys` entry is your PK (ASC/DESC consistent with your query)
+- **With keyset pagination**, pass a `cursor` (some or all order keys) and optional `strictAfter` (default true)
+
+## Data Types
+
+Supported column data types include:
+- `text` | `varchar` | `char`
+- `integer` | `numeric`
+- `jsonb`
+- `timestamptz`
+- `uuid`
+
+## Important Notes
+
+### Namespacing
+- Tables are referenced internally as `${companyId}_${tableName}`
+- Example: `"acme"` + `"orders"` = `acme_orders` table
+
+### JSON Data
+- Objects and arrays in `AddSingleDbRequest.data` are automatically cast to `jsonb`
+
+### Security
+- Column names are validated with a strict whitelist (`[a-zA-Z0-9_.]+`) before interpolation
+
+### Sorting Options
+- **Legacy**: Use `dataSort` for single-key sorting
+- **Preferred**: Use `orderKeys` array for multi-key sorting with explicit nulls ordering
+
+## Getting Started
+
+1. Set up your PostgreSQL connection environment variables
+2. Start the server (default port 3000)
+3. Check health with `GET /health`
+4. Use the POST endpoints for data operations
+
+The server provides a complete CRUD interface with advanced filtering, sorting, and aggregation capabilities for PostgreSQL databases.
+-------- [ Separator ] ------
+
+File Name: scale.js
+Size: 3.21 KB
+Code:
+const pm2 = require('pm2');
+const os = require('os');
+const http = require('http');
+
+// Configuration
+const APP_NAME = 'hono-ts-backend';
+const MIN_INSTANCES = 1; // Minimum instances under low load
+const MAX_CORES_PERCENTAGE = 0.5; // Use up to 50% of cores
+const CHECK_INTERVAL = 30000; // Check every 30 seconds
+const LOAD_THRESHOLD_HIGH = 0.7; // Scale up if CPU load > 70%
+const LOAD_THRESHOLD_LOW = 0.3; // Scale down if CPU load < 30%
+
+// Calculate max instances (50% of cores, rounded up)
+const totalCores = os.cpus().length;
+const maxInstances = Math.ceil(totalCores * MAX_CORES_PERCENTAGE);
+
+// Function to get CPU load (simplified, based on os.loadavg)
+function getCpuLoad() {
+    const load = os.loadavg()[0]; // 1-minute average
+    return load / totalCores; // Normalize by core count
+}
+
+// Function to get request rate (requires app to expose metrics)
+async function getRequestRate() {
+    return new Promise((resolve) => {
+        http.get('http://localhost:3000/health', (res) => {
+            let data = '';
+            res.on('data', (chunk) => (data += chunk));
+            res.on('end', () => {
+                try {
+                    const { requestCount = 0 } = JSON.parse(data);
+                    resolve(requestCount);
+                } catch {
+                    resolve(0);
+                }
+            });
+        }).on('error', () => resolve(0));
+    });
+}
+
+// Scaling logic
+async function scale() {
+    pm2.connect((err) => {
+        if (err) {
+            console.error('PM2 connection error:', err);
+            process.exit(2);
+        }
+
+        pm2.describe(APP_NAME, async (err, desc) => {
+            if (err) {
+                console.error('PM2 describe error:', err);
+                pm2.disconnect();
+                return;
+            }
+
+            const currentInstances = desc[0]?.pm2_env?.instances || MIN_INSTANCES;
+            const cpuLoad = getCpuLoad();
+            const requestRate = await getRequestRate();
+
+            console.log(`Current instances: ${currentInstances}, CPU load: ${(cpuLoad * 100).toFixed(2)}%, Request rate: ${requestRate}`);
+
+            let targetInstances = currentInstances;
+
+            // Scale up if CPU load is high or request rate is significant
+            if (cpuLoad > LOAD_THRESHOLD_HIGH || requestRate > 100) {
+                targetInstances = Math.min(currentInstances + 1, maxInstances);
+            }
+            // Scale down if CPU load is low and minimal requests
+            else if (cpuLoad < LOAD_THRESHOLD_LOW && requestRate < 10 && currentInstances > MIN_INSTANCES) {
+                targetInstances = currentInstances - 1;
+            }
+
+            if (targetInstances !== currentInstances) {
+                console.log(`Scaling to ${targetInstances} instances`);
+                pm2.scale(APP_NAME, targetInstances, (err) => {
+                    if (err) console.error('PM2 scale error:', err);
+                    else console.log(`Scaled to ${targetInstances} instances`);
+                    pm2.disconnect();
+                });
+            } else {
+                console.log('No scaling needed');
+                pm2.disconnect();
+            }
+        });
+    });
+}
+
+// Run scaling check periodically
+setInterval(scale, CHECK_INTERVAL);
+scale(); // Run immediately
+-------- [ Separator ] ------
+
+File Name: src/index.ts
+Size: 4.79 KB
+Code:
+import { Hono } from 'hono';
+import { serve } from '@hono/node-server';
+import { logger } from 'hono/logger';
+import { cors } from 'hono/cors';
+import {
+    AddSingleDbRequest,
+    GetDataDbRequest,
+    GetSingleRecordRequest,
+    PostgresManager,
+    UpdateSingleDbRequest
+} from '@cladbe/postgres_manager';
+import {
+    CreateTableDbRequest,
+    AggregationRequest,
+    TableExistsRequest
+} from '@cladbe/postgres_manager/dist/models/requests';
+
+const app = new Hono();
+const postgresManager = PostgresManager.getInstance();
+app.use('*', logger());
+app.use('*', cors());
+
+// ---- shared error utility ----
+function sendError(c: any, status: number, userMsg: string, err: unknown) {
+    const e = err as any;
+    return c.json(
+        {
+            error: userMsg,
+            message: e?.message ?? 'Unknown error',
+            stack: process.env.NODE_ENV === 'development' ? e?.stack : undefined,
+        },
+        status
+    );
+}
+
+// ---- global last-resort error handler (in case something escapes a route try/catch) ----
+app.onError((err, c) => {
+    console.error('Unhandled error:', err);
+    return sendError(c, 500, 'Internal Server Error', err);
+});
+
+app.get('/', (c) => c.text('Hello, Hono with TypeScript and PM2!'));
+app.get('/api', (c) => c.json({ message: 'Scalable Hono API' }));
+app.get('/health', (c) => c.json({ status: 'ok' }));
+
+// ---- get-data ----
+app.post('/get-data', async (c) => {
+    try {
+        const data: GetDataDbRequest = await c.req.json().then(GetDataDbRequest.fromMap);
+        const resp = await postgresManager.getData(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /get-data:', error);
+        return sendError(c, 500, 'Failed to retrieve data', error);
+    }
+});
+
+// ---- get-single-record ----
+app.post('/get-single-record', async (c) => {
+    try {
+        const data: GetSingleRecordRequest = await c.req.json().then(GetSingleRecordRequest.fromMap);
+        const resp = await postgresManager.getData(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /get-single-record:', error);
+        return sendError(c, 500, 'Failed to retrieve single record', error);
+    }
+});
+
+// ---- add-single-record ----
+app.post('/add-single-record', async (c) => {
+    try {
+        const data: AddSingleDbRequest = await c.req.json().then(AddSingleDbRequest.fromMap);
+        const resp = await postgresManager.editData(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /add-single-record:', error);
+        return sendError(c, 500, 'Failed to add record', error);
+    }
+});
+
+// ---- update-single-record ----
+app.post('/update-single-record', async (c) => {
+    try {
+        const data: UpdateSingleDbRequest = await c.req.json().then(UpdateSingleDbRequest.fromMap);
+        const resp = await postgresManager.editData(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /update-single-record:', error);
+        return sendError(c, 500, 'Failed to update record', error);
+    }
+});
+
+// ---- table-exists ----
+// If you later switch this to GET with query params, the same sendError applies.
+app.post('/table-exists', async (c) => {
+    try {
+        const data: TableExistsRequest = await c.req.json().then(TableExistsRequest.fromMap);
+        const resp = await postgresManager.tableExists(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /table-exists:', error);
+        return sendError(c, 500, 'Failed to check table-exists', error);
+    }
+});
+
+// ---- create-table ----
+app.post('/create-table', async (c) => {
+    try {
+        const data: CreateTableDbRequest = await c.req.json().then((val) => new CreateTableDbRequest(val));
+        const resp = await postgresManager.createTable(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /create-table:', error);
+        return sendError(c, 500, 'Failed to create table', error);
+    }
+});
+
+// ---- run-aggregation ----
+app.post('/run-aggregation', async (c) => {
+    try {
+        const data: AggregationRequest = await c.req.json().then(AggregationRequest.fromMap);
+        const resp = await postgresManager.runAggregationQuery(data);
+        return c.json({ data: resp }, 200);
+    } catch (error) {
+        console.error('Error in /run-aggregation:', error);
+        return sendError(c, 500, 'Failed to run aggregation', error);
+    }
+});
+
+const port = parseInt(process.env.PORT || '3000', 10);
+serve(
+    {
+        fetch: app.fetch,
+        port,
+    },
+    () => {
+        console.log(`Hono server running on port ${port}`);
+        if (process.send) process.send('ready');
+    }
+);
+
+process.on('SIGINT', () => {
+    console.log('Shutting down Hono server...');
+    process.exit(0);
+});
+
+-------- [ Separator ] ------

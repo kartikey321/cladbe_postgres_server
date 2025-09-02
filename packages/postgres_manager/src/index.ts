@@ -11,7 +11,9 @@ export {
     DbResponse,
     AggregationRequest,
     CreateTableDbRequest,
-    SchemaModifierRequest
+    SchemaModifierRequest,
+    DeleteRowDbRequest,
+    TableExistsRequest
 } from './models/requests';
 export {
     BaseSqlDataFilter,

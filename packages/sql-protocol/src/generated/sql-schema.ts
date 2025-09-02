@@ -2,6 +2,7 @@
 
 /* eslint-disable @typescript-eslint/no-unused-vars, @typescript-eslint/no-explicit-any, @typescript-eslint/no-non-null-assertion */
 
+export { AggregationSpec } from './sql-schema/aggregation-spec.js';
 export { BasicSqlDataFilter } from './sql-schema/basic-sql-data-filter.js';
 export { BasicSqlDataFilterType } from './sql-schema/basic-sql-data-filter-type.js';
 export { BasicSqlDataFilterUnion } from './sql-schema/basic-sql-data-filter-union.js';
@@ -27,6 +28,7 @@ export { RangeValue } from './sql-schema/range-value.js';
 export { SQLDataType } from './sql-schema/sqldata-type.js';
 export { SQLFilterWrapperType } from './sql-schema/sqlfilter-wrapper-type.js';
 export { SqlFilterModifier } from './sql-schema/sql-filter-modifier.js';
+export { SqlQuerySpec } from './sql-schema/sql-query-spec.js';
 export { StreamingSqlDataFilter } from './sql-schema/streaming-sql-data-filter.js';
 export { StringList } from './sql-schema/string-list.js';
 export { StringValue } from './sql-schema/string-value.js';

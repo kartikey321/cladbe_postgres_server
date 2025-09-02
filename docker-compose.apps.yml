@@ -1,0 +1,47 @@
+version: "3.9"
+name: cladbe-apps
+
+networks:
+  cladbe_net:
+    external: true
+    name: cladbe_net
+
+services:
+  mono-image:
+    build:
+      context: .
+      target: runtime
+    image: cladbe/mono:latest
+    env_file: .env
+    networks: [cladbe_net]
+
+  server:
+    image: cladbe/mono:latest
+    env_file: .env
+    depends_on: [mono-image]
+    working_dir: /app/packages/server
+    command: ["node", "dist/index.js"]
+    ports:
+      - "${PORT:-7500}:7500"
+    restart: unless-stopped
+    networks: [cladbe_net]
+
+  postgres_rpc:
+    image: cladbe/mono:latest
+    env_file: .env
+    depends_on: [mono-image]
+    working_dir: /app/packages/postgres_rpc
+    command: ["node", "dist/index.js"]
+    restart: unless-stopped
+    networks: [cladbe_net]
+
+  ws-gateway:
+    image: cladbe/mono:latest
+    env_file: .env
+    depends_on: [mono-image]
+    working_dir: /app/packages/cladbe-ws-gateway
+    command: ["node", "dist/main.js"]
+    ports:
+      - "${WS_PORT:-7000}:7000"
+    restart: unless-stopped
+    networks: [cladbe_net]

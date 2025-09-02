@@ -1,4 +1,5 @@
-include "sql_schema.fbs"; // your earlier FBS with explicit numeric enums
+include "sql_schema.fbs";
+
 namespace SqlRpc;
 
 // ---------- RPC Method ----------
@@ -13,17 +14,16 @@ enum RpcMethod : ubyte {
   RUN_AGGREGATION  = 7
 }
 
-// ---------- Requests (use pieces from SqlSchema) ----------
-
+// ---------- Requests ----------
 table GetDataReq {
   company_id: string;
   table_name: string;
-  wrapper: SqlSchema.BasicSqlDataFilterWrapper;  // optional; for simple calls pass empty
-  limit: uint32 = 0;      // 0 → no limit
-  offset: uint32 = 0;     // optional; prefer cursor later
+  wrapper: SqlSchema.BasicSqlDataFilterWrapper; // optional
+  limit: uint32 = 0;                             // 0 → no limit
+  offset: uint32 = 0;                            // legacy; prefer cursor
   order: [SqlSchema.OrderKeySpec];               // optional
-  cursor: [SqlSchema.CursorEntry];
-  strict_after: bool = true;
+  cursor: [SqlSchema.CursorEntry];               // keyset cursor
+  strict_after: bool = true;                     // default true
 }
 
 table GetSingleReq {
@@ -37,8 +37,7 @@ table AddSingleReq {
   company_id: string;
   table_name: string;
   primary_key_column: string;
-  // row as JSON (server already casts objects to jsonb), pragmatic & compact
-  row_json: string;
+  row_json: string; // JSON row payload
 }
 
 table UpdateSingleReq {
@@ -46,7 +45,7 @@ table UpdateSingleReq {
   table_name: string;
   primary_key_column: string;
   primary_id: string;
-  updates_json: string;
+  updates_json: string; // JSON partial
 }
 
 table DeleteRowReq {
@@ -78,16 +77,26 @@ table RunAggregationReq {
 }
 
 // ---------- Responses ----------
-
-table RowsJson { rows: [string]; }           // each element is one row JSON
-table RowJson  { row: string; }              // single row JSON
+table RowsJson { rows: [string]; }           // unchanged
+table RowJson  { row: string; }
 table BoolRes  { value: bool; }
 table AggRes   { agg: SqlSchema.DataHelperAggregation; }
 
+// NEW: rows + cursor (e.g. WAL LSN) in one message
+table RowsWithCursor {
+  rows: [string];
+  cursor: [SqlSchema.CursorEntry];
+}
+
 enum ErrorCode : ubyte { NONE = 0, BAD_REQUEST = 1, INTERNAL = 2 }
 
+// Single union definition including the new type
 union RpcResponse {
-  RowsJson, RowJson, BoolRes, AggRes
+  RowsJson,
+  RowJson,
+  BoolRes,
+  AggRes,
+  RowsWithCursor
 }
 
 table ResponseEnvelope {
@@ -99,17 +108,22 @@ table ResponseEnvelope {
 }
 
 // ---------- Envelope ----------
-
 union RpcPayload {
-  GetDataReq, GetSingleReq, AddSingleReq, UpdateSingleReq, DeleteRowReq,
-  CreateTableReq, TableExistsReq, RunAggregationReq
+  GetDataReq,
+  GetSingleReq,
+  AddSingleReq,
+  UpdateSingleReq,
+  DeleteRowReq,
+  CreateTableReq,
+  TableExistsReq,
+  RunAggregationReq
 }
 
 table RequestEnvelope {
   correlation_id: string;
-  reply_topic: string;        // producer can override default reply topic
+  reply_topic: string;
   method: RpcMethod;
-  payload: RpcPayload;        // one of the above
+  payload: RpcPayload;
 }
 
 root_type RequestEnvelope;
