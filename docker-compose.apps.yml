@@ -1,4 +1,3 @@
-version: "3.9"
 name: cladbe-apps
 
 networks:
@@ -7,18 +6,22 @@ networks:
     name: cladbe_net
 
 services:
+  # Build once, tag locally; no build target (works even if your Dockerfile has no "AS runtime")
   mono-image:
     build:
       context: .
-      target: runtime
-    image: cladbe/mono:latest
+      dockerfile: Dockerfile   # keep explicit
+      # target: runtime        # <-- removed; your Dockerfile doesn't have this stage
+    image: cladbe/mono:local   # local tag, not on Docker Hub
     env_file: .env
     networks: [cladbe_net]
 
   server:
-    image: cladbe/mono:latest
+    image: cladbe/mono:local   # use the locally built image
+    pull_policy: never         # never pull from remote; use local tag only
     env_file: .env
-    depends_on: [mono-image]
+    depends_on:
+      - mono-image
     working_dir: /app/packages/server
     command: ["node", "dist/index.js"]
     ports:
@@ -27,18 +30,22 @@ services:
     networks: [cladbe_net]
 
   postgres_rpc:
-    image: cladbe/mono:latest
+    image: cladbe/mono:local
+    pull_policy: never
     env_file: .env
-    depends_on: [mono-image]
+    depends_on:
+      - mono-image
     working_dir: /app/packages/postgres_rpc
     command: ["node", "dist/index.js"]
     restart: unless-stopped
     networks: [cladbe_net]
 
   ws-gateway:
-    image: cladbe/mono:latest
+    image: cladbe/mono:local
+    pull_policy: never
     env_file: .env
-    depends_on: [mono-image]
+    depends_on:
+      - mono-image
     working_dir: /app/packages/cladbe-ws-gateway
     command: ["node", "dist/main.js"]
     ports:

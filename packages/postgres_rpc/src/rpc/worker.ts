@@ -11,7 +11,15 @@ const SqlRpc = sr.SqlRpc;
 const SqlSchema = sc.SqlSchema;
 
 // ---- Your Postgres manager (singleton) + request classes ----
-import { BaseSqlDataFilter, PostgresManager } from "@cladbe/postgres_manager";
+import {
+  BaseSqlDataFilter,
+  NullsSortOrder,
+  PostgresManager,
+  SqlDataFilter,
+  SQLDataFilterType,
+  SqlDataFilterWrapper,
+  SQLFilterWrapperType,
+} from "@cladbe/postgres_manager";
 import {
   GetDataDbRequest,
   GetSingleRecordRequest,
@@ -127,27 +135,27 @@ function encodeBool(
 function encodeRowsWithCursor(
   builder: flatbuffers.Builder,
   rows: string[],
-  cursor: Record<string, any>
+  cursor: Record<string, unknown>
 ): { off: number; type: sr.SqlRpc.RpcResponse } {
   // rows
   const rowOffsets = rows.map((r) => builder.createString(r));
   const rowsVec = SqlRpc.RowsWithCursor.createRowsVector(builder, rowOffsets);
 
-  // cursor → encode each value as StringValue for now (simple & safe)
+  // cursor → encode each value as StringValue (safe default)
   const cursorEntries: number[] = [];
   for (const [field, value] of Object.entries(cursor)) {
     const fOff = builder.createString(field);
     const vOff = builder.createString(String(value));
 
-    sc.SqlSchema.StringValue.startStringValue(builder);
-    sc.SqlSchema.StringValue.addValue(builder, vOff);
-    const strValOff = sc.SqlSchema.StringValue.endStringValue(builder);
+    SqlSchema.StringValue.startStringValue(builder);
+    SqlSchema.StringValue.addValue(builder, vOff);
+    const strValOff = SqlSchema.StringValue.endStringValue(builder);
 
-    sc.SqlSchema.CursorEntry.startCursorEntry(builder);
-    sc.SqlSchema.CursorEntry.addField(builder, fOff);
-    sc.SqlSchema.CursorEntry.addValueType(builder, sc.SqlSchema.FilterValue.StringValue);
-    sc.SqlSchema.CursorEntry.addValue(builder, strValOff);
-    const ceOff = sc.SqlSchema.CursorEntry.endCursorEntry(builder);
+    SqlSchema.CursorEntry.startCursorEntry(builder);
+    SqlSchema.CursorEntry.addField(builder, fOff);
+    SqlSchema.CursorEntry.addValueType(builder, SqlSchema.FilterValue.StringValue);
+    SqlSchema.CursorEntry.addValue(builder, strValOff);
+    const ceOff = SqlSchema.CursorEntry.endCursorEntry(builder);
     cursorEntries.push(ceOff);
   }
   const cursorVec = SqlRpc.RowsWithCursor.createCursorVector(builder, cursorEntries);
@@ -168,20 +176,114 @@ function encodeAggPlaceholder(
   return { off, type: sr.SqlRpc.RpcResponse.AggRes };
 }
 
-// ============================ Spec → Manager mappers ============================
-//
-// Unions in TS codegen expose:
-//   - <field>NameType(): enum
-//   - <field>Name<T>(obj: T): T | null   // fills the provided table obj
-//
-// We must switch on the type enum and call the value(obj) filler.
-//
+// ============================ Enum + union mappers ============================
+
+function mapOrderSort(s: sc.SqlSchema.OrderSort): OrderSort {
+  switch (s) {
+    case SqlSchema.OrderSort.ASC_DEFAULT:
+      return OrderSort.ASC_DEFAULT;
+    case SqlSchema.OrderSort.ASC_NULLS_FIRST:
+      return OrderSort.ASC_NULLS_FIRST;
+    case SqlSchema.OrderSort.ASC_NULLS_LAST:
+      return OrderSort.ASC_NULLS_LAST;
+    case SqlSchema.OrderSort.DESC_DEFAULT:
+      return OrderSort.DESC_DEFAULT;
+    case SqlSchema.OrderSort.DESC_NULLS_FIRST:
+      return OrderSort.DESC_NULLS_FIRST;
+    case SqlSchema.OrderSort.DESC_NULLS_LAST:
+      return OrderSort.DESC_NULLS_LAST;
+    default:
+      return OrderSort.DESC_DEFAULT;
+  }
+}
+
+function mapWrapperType(t: sc.SqlSchema.SQLFilterWrapperType | null): SQLFilterWrapperType | undefined {
+  if (t == null) return undefined;
+  switch (t) {
+    case SqlSchema.SQLFilterWrapperType.and:
+      return SQLFilterWrapperType.and;
+    case SqlSchema.SQLFilterWrapperType.or:
+      return SQLFilterWrapperType.or;
+    default:
+      return undefined;
+  }
+}
+
+function mapNullsSortOrder(n: sc.SqlSchema.NullsSortOrder | null | undefined): NullsSortOrder {
+  switch (n) {
+    case SqlSchema.NullsSortOrder.first:
+      return NullsSortOrder.first;
+    case SqlSchema.NullsSortOrder.last:
+      return NullsSortOrder.last;
+    case SqlSchema.NullsSortOrder.default_:
+    default:
+      return NullsSortOrder.default_;
+  }
+}
+
+function mapFilterType(ft: sc.SqlSchema.BasicSqlDataFilterType | null): SQLDataFilterType | undefined {
+  if (ft == null) return undefined;
+
+  switch (ft) {
+    // Basic Comparison
+    case SqlSchema.BasicSqlDataFilterType.equals: return SQLDataFilterType.equals;
+    case SqlSchema.BasicSqlDataFilterType.notEquals: return SQLDataFilterType.notEquals;
+    case SqlSchema.BasicSqlDataFilterType.lessThan: return SQLDataFilterType.lessThan;
+    case SqlSchema.BasicSqlDataFilterType.lessThanOrEquals: return SQLDataFilterType.lessThanOrEquals;
+    case SqlSchema.BasicSqlDataFilterType.greaterThan: return SQLDataFilterType.greaterThan;
+    case SqlSchema.BasicSqlDataFilterType.greaterThanOrEquals: return SQLDataFilterType.greaterThanOrEquals;
+
+    // NULL
+    case SqlSchema.BasicSqlDataFilterType.isNull: return SQLDataFilterType.isNull;
+    case SqlSchema.BasicSqlDataFilterType.isNotNull: return SQLDataFilterType.isNotNull;
+
+    // Regex & Pattern
+    case SqlSchema.BasicSqlDataFilterType.regex: return SQLDataFilterType.regex;
+    case SqlSchema.BasicSqlDataFilterType.notRegex: return SQLDataFilterType.notRegex;
+    case SqlSchema.BasicSqlDataFilterType.startsWith: return SQLDataFilterType.startsWith;
+    case SqlSchema.BasicSqlDataFilterType.endsWith: return SQLDataFilterType.endsWith;
+    case SqlSchema.BasicSqlDataFilterType.contains: return SQLDataFilterType.contains;
+    case SqlSchema.BasicSqlDataFilterType.notContains: return SQLDataFilterType.notContains;
+
+    // Array
+    case SqlSchema.BasicSqlDataFilterType.arrayContains: return SQLDataFilterType.arrayContains;
+    case SqlSchema.BasicSqlDataFilterType.arrayContainedBy: return SQLDataFilterType.arrayContainedBy;
+    case SqlSchema.BasicSqlDataFilterType.arrayOverlaps: return SQLDataFilterType.arrayOverlaps;
+    case SqlSchema.BasicSqlDataFilterType.arrayEquals: return SQLDataFilterType.arrayEquals;
+    case SqlSchema.BasicSqlDataFilterType.arrayNotEquals: return SQLDataFilterType.arrayNotEquals;
+    case SqlSchema.BasicSqlDataFilterType.arrayEmpty: return SQLDataFilterType.arrayEmpty;
+    case SqlSchema.BasicSqlDataFilterType.arrayNotEmpty: return SQLDataFilterType.arrayNotEmpty;
+    case SqlSchema.BasicSqlDataFilterType.arrayLength: return SQLDataFilterType.arrayLength;
+
+    // JSON
+    case SqlSchema.BasicSqlDataFilterType.jsonContains: return SQLDataFilterType.jsonContains;
+    case SqlSchema.BasicSqlDataFilterType.jsonContainedBy: return SQLDataFilterType.jsonContainedBy;
+    case SqlSchema.BasicSqlDataFilterType.jsonHasKey: return SQLDataFilterType.jsonHasKey;
+    case SqlSchema.BasicSqlDataFilterType.jsonHasAnyKey: return SQLDataFilterType.jsonHasAnyKey;
+    case SqlSchema.BasicSqlDataFilterType.jsonHasAllKeys: return SQLDataFilterType.jsonHasAllKeys;
+    case SqlSchema.BasicSqlDataFilterType.jsonGetField: return SQLDataFilterType.jsonGetField;
+    case SqlSchema.BasicSqlDataFilterType.jsonGetFieldAsText: return SQLDataFilterType.jsonGetFieldAsText;
+
+    // Range
+    case SqlSchema.BasicSqlDataFilterType.between: return SQLDataFilterType.between;
+    case SqlSchema.BasicSqlDataFilterType.notBetween: return SQLDataFilterType.notBetween;
+    case SqlSchema.BasicSqlDataFilterType.rangeContains: return SQLDataFilterType.rangeContains;
+    case SqlSchema.BasicSqlDataFilterType.rangeContainedBy: return SQLDataFilterType.rangeContainedBy;
+
+    // Set
+    case SqlSchema.BasicSqlDataFilterType.inList: return SQLDataFilterType.in_;
+    case SqlSchema.BasicSqlDataFilterType.notInList: return SQLDataFilterType.notIn;
+
+    default:
+      return undefined;
+  }
+}
 
 /** Convert a FilterValue union (type + value getter) to a plain JS value */
-function readFilterFromUnion(
-  type: number,
-  getVal: <T>(obj: T) => T | null
-): any {
+function readFilterFromUnion<T>(
+  type: sc.SqlSchema.FilterValue,
+  getVal: <U>(obj: U) => U | null
+): unknown {
   switch (type) {
     case SqlSchema.FilterValue.StringValue: {
       const o = new SqlSchema.StringValue();
@@ -250,87 +352,64 @@ function readFilterFromUnion(
   }
 }
 
-/** Read CursorEntry[] → { field: value } */
-function readCursor(spec: sc.SqlSchema.SqlQuerySpec | null): Record<string, any> | undefined {
-  if (!spec) return undefined;
-  const n = spec.cursorLength?.() ?? 0;
-  if (!n) return undefined;
-  const out: Record<string, any> = {};
-  for (let i = 0; i < n; i++) {
-    const ce = spec.cursor(i);
-    if (!ce) continue;
-    const name = ce.field() || "";
-    const t = ce.valueType();
-    const v = readFilterFromUnion(t, (o) => ce.value(o));
-    if (name) out[name] = v;
-  }
-  return Object.keys(out).length ? out : undefined;
-}
+// ============================ Spec → Manager mappers ============================
 
-/** Read OrderKeySpec[] → manager-friendly array */
-function readOrder(spec: sc.SqlSchema.SqlQuerySpec | null) {
-  if (!spec) return undefined;
-  const n = spec.orderLength?.() ?? 0;
-  if (!n) return undefined;
-  const out: Array<{ field: string; sort: number; isPk?: boolean }> = [];
-  for (let i = 0; i < n; i++) {
-    const ok = spec.order(i);
-    if (!ok) continue;
-    out.push({
-      field: ok.field() || "",
-      sort: ok.sort(),
-      isPk: !!ok.isPk?.(),
-    });
-  }
-  return out.length ? out : undefined;
-}
-
-/** Recursively read BasicSqlDataFilterWrapper into a manager-accepted shape */
+/** Recursively read BasicSqlDataFilterWrapper into manager’s filter tree */
 function readFilterWrapper(
   w: sc.SqlSchema.BasicSqlDataFilterWrapper | null
-): any /* SqlDataFilterWrapper */ {
+): BaseSqlDataFilter | undefined {
   if (!w) return undefined;
 
-  const wrapperType = w.filterWrapperType();
+  const wrapperType = mapWrapperType(w.filterWrapperType());
   const filtersLen = w.filtersLength() || 0;
-  const outFilters: any[] = [];
+  const outFilters: BaseSqlDataFilter[] = [];
 
   for (let i = 0; i < filtersLen; i++) {
     const kind = w.filtersType(i);
 
     if (kind === SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilterWrapper) {
       const nested = new SqlSchema.BasicSqlDataFilterWrapper();
-      const got = w.filters(i, nested as any);
-      if (got) outFilters.push(readFilterWrapper(got as any));
+      const got = w.filters(i, nested);
+      const nestedMapped = readFilterWrapper(got);
+      if (nestedMapped) outFilters.push(nestedMapped);
       continue;
     }
 
     if (kind === SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilter) {
       const filt = new SqlSchema.BasicSqlDataFilter();
-      const got = w.filters(i, filt as any) as sc.SqlSchema.BasicSqlDataFilter | null; if (!got) continue;
+      const got = w.filters(i, filt);
+      if (!got) continue;
+
+      const ft = mapFilterType(got.filterType());
+      if (!ft) continue;
 
       const mod = got.modifier();
-      const t = got.valueType();
-      const val = readFilterFromUnion(t, (o) => got.value(o));
+      const valueType = got.valueType();
+      const value = readFilterFromUnion(valueType, (o) => got.value(o));
 
-      outFilters.push({
+      const mapped: SqlDataFilter = {
         fieldName: got.fieldName() || "",
-        value: val,
-        filterType: got.filterType(),
+        value,
+        filterType: ft,
         modifier: mod
           ? {
-            distinct: !!mod.distinct(),
-            caseInSensitive: !!mod.caseInsensitive?.(),
-            nullsOrder: mod.nullsOrder?.(),
-          }
-          : undefined,
-      });
+              distinct: !!mod.distinct(),
+              caseInSensitive: !!(mod.caseInsensitive?.() ?? false),
+              nullsOrder: mapNullsSortOrder(mod.nullsOrder?.()),
+            }
+          : {
+              caseInSensitive: false,
+              nullsOrder: NullsSortOrder.default_,
+            },
+      };
+
+      outFilters.push(mapped);
       continue;
     }
   }
 
   return {
-    filterWrapperType: wrapperType,
+    filterWrapperType: wrapperType ?? SQLFilterWrapperType.and,
     filters: outFilters,
   };
 }
@@ -371,44 +450,46 @@ export function __setPgForTest(x: PostgresManager | undefined) {
 }
 
 // Return type for GET_DATA
-type GetDataResult = { rows: string[]; cursor?: Record<string, any> };
+type GetDataResult = { rows: string[]; cursor?: Record<string, unknown> };
 
-/** GET_DATA → GetDataDbRequest (supports legacy fields and new SqlQuerySpec) */
+/** GET_DATA → GetDataDbRequest (supports legacy fields and union spec) */
 async function handleGetData(req: sr.SqlRpc.GetDataReq): Promise<GetDataResult> {
   const companyId = req.companyId() || "";
   const tableName = req.tableName() || "";
 
   // wrapper → filters tree
   const wrapper = req.wrapper();
-  const filters = wrapper ? [readFilterWrapper(wrapper) as any] : undefined;
+  const filters = wrapper ? [readFilterWrapper(wrapper)].filter(Boolean) as BaseSqlDataFilter[] : undefined;
 
   // order[]
   let orderKeys: MgrOrderKeySpec[] | undefined;
-  if (req.orderLength() > 0) {
+  const orderLen = req.orderLength?.() ?? 0;
+  if (orderLen > 0) {
     orderKeys = [];
-    for (let i = 0; i < req.orderLength(); i++) {
+    for (let i = 0; i < orderLen; i++) {
       const ok = req.order(i);
       if (!ok) continue;
       orderKeys.push({
         field: ok.field() || "",
-        sort: ok.sort() as unknown as OrderSort,
+        sort: mapOrderSort(ok.sort()),
       });
     }
   }
 
   // cursor[]
-  let cursor: Record<string, any> | undefined;
-  if (req.cursorLength() > 0) {
-    cursor = {};
-    for (let i = 0; i < req.cursorLength(); i++) {
+  let cursor: Record<string, unknown> | undefined;
+  const cursorLen = req.cursorLength?.() ?? 0;
+  if (cursorLen > 0) {
+    const c: Record<string, unknown> = {};
+    for (let i = 0; i < cursorLen; i++) {
       const ce = req.cursor(i);
       if (!ce) continue;
       const name = ce.field() || "";
       const t = ce.valueType();
       const value = readFilterFromUnion(t, (obj) => ce.value(obj));
-      if (name) cursor[name] = value;
+      if (name) c[name] = value as unknown;
     }
-    if (Object.keys(cursor).length === 0) cursor = undefined;
+    if (Object.keys(c).length) cursor = c;
   }
 
   const mgrReq = new GetDataDbRequest({
@@ -417,23 +498,22 @@ async function handleGetData(req: sr.SqlRpc.GetDataReq): Promise<GetDataResult> 
     filters,
     orderKeys,
     cursor,
-    strictAfter: req.strictAfter(),   // default true in schema
-    limit: req.limit?.() ?? undefined,   // 0 means no limit
-    offset: req.offset?.() ?? undefined, // legacy; avoid with cursor
+    strictAfter: req.strictAfter(),         // default true in schema
+    limit: req.limit?.() ?? undefined,     // 0 → undefined (no limit)
+    offset: req.offset?.() ?? undefined,   // legacy; avoid with cursor
   });
 
-  // Manager may return either rows[] (legacy) or { rows, cursor }
   const mgrResp = await getPg().getData(mgrReq);
 
   if (Array.isArray(mgrResp)) {
-    const rows = (mgrResp || []).map((r: any) => JSON.stringify(r));
+    const rows = (mgrResp || []).map((r: unknown) => JSON.stringify(r));
     return { rows };
   }
 
-  const rows = (mgrResp?.rows || []).map((r: any) => JSON.stringify(r));
+  const rows = (mgrResp?.rows || []).map((r: unknown) => JSON.stringify(r));
   const nextCursor =
     mgrResp?.cursor && typeof mgrResp.cursor === "object" && Object.keys(mgrResp.cursor).length
-      ? mgrResp.cursor
+      ? (mgrResp.cursor as Record<string, unknown>)
       : undefined;
 
   return { rows, cursor: nextCursor };
@@ -453,7 +533,7 @@ async function handleGetSingle(req: sr.SqlRpc.GetSingleReq): Promise<string | nu
     primaryId,
   });
 
-  const row = await getPg().getData(mgrReq as any);
+  const row = await getPg().getData(mgrReq);
   return row ? JSON.stringify(row) : null;
 }
 
@@ -472,7 +552,7 @@ async function handleAddSingle(req: sr.SqlRpc.AddSingleReq): Promise<string[]> {
   });
 
   const added = await getPg().editData(mgrReq);
-  return (added || []).map((r: any) => JSON.stringify(r));
+  return (added || []).map((r: unknown) => JSON.stringify(r));
 }
 
 /** UPDATE_SINGLE → UpdateSingleDbRequest */
@@ -492,7 +572,7 @@ async function handleUpdateSingle(req: sr.SqlRpc.UpdateSingleReq): Promise<strin
   });
 
   const updated = await getPg().editData(mgrReq);
-  return (updated || []).map((r: any) => JSON.stringify(r));
+  return (updated || []).map((r: unknown) => JSON.stringify(r));
 }
 
 /** DELETE_ROW → DeleteRowDbRequest */
@@ -513,7 +593,7 @@ async function handleDeleteRow(req: sr.SqlRpc.DeleteRowReq): Promise<boolean> {
   return Array.isArray(deleted) ? deleted.length > 0 : !!deleted;
 }
 
-/** CREATE_TABLE → CreateTableDbRequest (intentionally unimplemented now) */
+/** CREATE_TABLE → CreateTableDbRequest (stub for now) */
 async function handleCreateTable(_req: sr.SqlRpc.CreateTableReq): Promise<boolean> {
   throw new Error("CreateTable is not implemented yet");
 }
@@ -528,7 +608,7 @@ async function handleTableExists(req: sr.SqlRpc.TableExistsReq): Promise<boolean
 }
 
 /** RUN_AGGREGATION → AggregationRequest (maps AggregationSpec if present) */
-async function handleRunAggregation(req: sr.SqlRpc.RunAggregationReq): Promise<any> {
+async function handleRunAggregation(req: sr.SqlRpc.RunAggregationReq): Promise<unknown> {
   const companyId = req.companyId() || "";
   const tableName = req.tableName() || "";
 
@@ -554,7 +634,7 @@ async function handleRunAggregation(req: sr.SqlRpc.RunAggregationReq): Promise<a
     : maximumFieldsLegacy;
   const countEnabled = spec ? !!(spec.countEnabled?.() ?? false) : countEnabledLegacy;
 
-  const filters = spec ? [readFilterWrapper(spec.wrapper())].filter(Boolean) as any : undefined;
+  const filters = spec ? [readFilterWrapper(spec.wrapper())].filter(Boolean) as BaseSqlDataFilter[] : undefined;
 
   const mgrReq = new AggregationRequest({
     tableName,

@@ -1,4 +1,4 @@
-import { BaseSqlDataFilter, DataSort, SqlDataFilter, OrderKeySpec, SqlDataFilterWrapper } from "./filters/filters";
+import { BaseSqlDataFilter, DataSort, SqlDataFilter, OrderKeySpec } from "./filters/filters";
 import { TableDefinition } from "./table_definition";
 export declare abstract class DbRequest {
     tableName: string;
@@ -50,7 +50,7 @@ export declare class AggregationRequest extends FetchDbRequest {
     sumFields?: string[];
     averageFields?: string[];
     countEnabled: boolean;
-    filters?: SqlDataFilterWrapper[];
+    filters?: BaseSqlDataFilter[];
     minimumFields?: string[];
     maximumFields?: string[];
     constructor(params: {
@@ -59,7 +59,7 @@ export declare class AggregationRequest extends FetchDbRequest {
         sumFields?: string[];
         averageFields?: string[];
         countEnabled?: boolean;
-        filters?: SqlDataFilterWrapper[];
+        filters?: BaseSqlDataFilter[];
         minimumFields?: string[];
         maximumFields?: string[];
     });

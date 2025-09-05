@@ -1,0 +1,1 @@
+{"root":["./src/decode.ts","./src/encode.ts","./src/index.ts","./src/types.ts","./src/helpers/enums.ts","./src/helpers/filters.ts","./src/helpers/tabledef.ts","./src/helpers/values.ts"],"version":"5.9.2"}

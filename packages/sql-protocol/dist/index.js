@@ -36,8 +36,9 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.SqlSchema = exports.SqlRpc = void 0;
+exports.flatbuffers = exports.SqlSchema = exports.SqlRpc = void 0;
 exports.SqlRpc = __importStar(require("./generated/sql_rpc"));
 exports.SqlSchema = __importStar(require("./generated/sql_schema"));
 __exportStar(require("./fb_decode"), exports);
 __exportStar(require("./fb_maps"), exports);
+exports.flatbuffers = __importStar(require("flatbuffers"));

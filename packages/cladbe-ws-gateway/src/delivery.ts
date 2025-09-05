@@ -3,7 +3,7 @@
 import type { SubState } from "./lsn.js";
 import { MAX_QUEUE } from "./config.js";
 import { sessions } from "./state.js";
-
+import { safeSend } from "./ws/io.js";
 import { HotCache } from "./keydb.js";
 const hotCache = new HotCache();
 
@@ -15,7 +15,8 @@ const hotCache = new HotCache();
  * gateway process from buffering unbounded data and helps bound end-to-end lag.
  */
 export let SLOW_SOCKETS = 0;
-
+export function markSlow() { SLOW_SOCKETS++; }
+export function markFast() { if (SLOW_SOCKETS > 0) SLOW_SOCKETS--; }
 /**
  * Fan-out a binary CDC diff (FlatBuffer payload) to all subscribed sessions for a given query hashId.
  *
@@ -59,11 +60,12 @@ export function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, o
   const b64 = payload.toString("base64");
   void hotCache.addDiff(hashId, lsn.toString(), b64).catch(() => { /* non-fatal */ });
 
-  for (const st of targetSessions) {
-    for (const key of st.subs) {
-      if (!key.endsWith(hashId)) continue;
+ for (const st of targetSessions) {
+  for (const subKey of st.subs) {
+    if (subKey !== hashId) continue; // exact match on routingKey
+    
       const subStates: Map<string, SubState> = (st as any).subStates ?? new Map();
-      const sub = subStates.get(key);
+    const sub = subStates.get(subKey);
       if (!sub) continue;
 
       // If snapshot still in-flight, buffer
@@ -88,3 +90,22 @@ export function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, o
   }
   return delivered;
 }
+
+
+/**
+ * Fan-out a JSON row-event envelope to all sessions subscribed to `routingKey` (== hashId).
+ * Uses the same backpressure path as other JSON frames via safeSend.
+ */
+export function deliverRowEvent(
+  routingKey: string,
+  ev: { hashId: string; lsn: string; kind: "added"|"modified"|"removed"; pk: string; pos?: number | null; from?: number | null; needFetch?: boolean; row?: any }
+) {
+  let delivered = 0;
+  for (const s of sessions.values()) {
+    if (!s.subs.has(routingKey)) continue;
+    safeSend(s.socket as any, { op: "rowEvent", ...ev } as any);
+    delivered++;
+  }
+  return delivered;
+}
+

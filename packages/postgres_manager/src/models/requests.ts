@@ -8,7 +8,6 @@ import {
   SqlDataFilterWrapper
 } from "./filters/filters";
 import { TableDefinition } from "./table_definition";
-import { DataHelperAggregation } from "./aggregation";
 
 export abstract class DbRequest {
   constructor(public tableName: string, public companyId: string) {
@@ -107,7 +106,7 @@ export class AggregationRequest extends FetchDbRequest {
   sumFields?: string[];
   averageFields?: string[];
   countEnabled: boolean;
-  filters?: SqlDataFilterWrapper[];
+  filters?: BaseSqlDataFilter[];
   minimumFields?: string[];
   maximumFields?: string[];
 
@@ -117,7 +116,7 @@ export class AggregationRequest extends FetchDbRequest {
     sumFields?: string[];
     averageFields?: string[];
     countEnabled?: boolean;
-    filters?: SqlDataFilterWrapper[];
+    filters?: BaseSqlDataFilter[];
     minimumFields?: string[];
     maximumFields?: string[];
   }) {

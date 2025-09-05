@@ -11,6 +11,9 @@
   "dependencies": {
     "@cladbe/shared-config": "file:../shared-config",
     "@cladbe/sql-protocol": "file:../sql-protocol",
+    "@cladbe/sql-codec": "file:../sql-codec",
+
+    "dotenv": "^17.2.1",
     "flatbuffers": "^25.2.10",
     "ioredis": "^5.7.0",
     "node-rdkafka": "file:/root/node-rdkafka",

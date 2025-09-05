@@ -1,28 +1,32 @@
-// src/rpc/kafka.ts
 /* eslint-disable @typescript-eslint/no-explicit-any */
-// import {
-//     KafkaConsumer,
-//     Producer,
-//     LibrdKafkaError,
-//     Message,
-// } from "node-rdkafka";
-import rdkafka from "node-rdkafka";
+import pkg from "node-rdkafka";
+const { KafkaConsumer, Producer } = pkg;
+/**
+ * Small Kafka wrapper used by the Postgres RPC worker:
+ * - 1 Producer (for replies)
+ * - 1 Consumer (subscribed to the request topic)
+ * - ESM-safe import pattern for node-rdkafka
+ */
 export class RpcKafka {
     cfg;
+    // keep concrete types from pkg so TS knows the methods we call
     producer;
     consumer;
+    // poll timer so librdkafka can drain callbacks in ESM/Node event loop
     pollTimer;
+    // user handler (we call this when a request message arrives)
     onMessage;
     constructor(cfg) {
         this.cfg = cfg;
-        this.producer = new rdkafka.Producer({
-            "metadata.broker.list": cfg.brokers.join(","),
+        // ---- Producer (used to send responses back to "replyTopic") ----
+        this.producer = new Producer({
+            "metadata.broker.list": cfg.brokers.join(","), // comma-separated string
             "client.id": "cladbe-postgres-rpc",
             "socket.keepalive.enable": true,
-            // delivery reports disabled for simplicity; we poll to drain queue
-            "dr_cb": false,
+            dr_cb: false, // we don't need delivery reports for RPC
         }, {});
-        this.consumer = new rdkafka.KafkaConsumer({
+        // ---- Consumer (listens on the single request topic) ----
+        this.consumer = new KafkaConsumer({
             "metadata.broker.list": cfg.brokers.join(","),
             "group.id": cfg.groupId,
             "enable.auto.commit": true,
@@ -31,26 +35,30 @@ export class RpcKafka {
             "client.id": "cladbe-postgres-rpc",
         }, { "auto.offset.reset": "latest" });
     }
+    /** Register request handler; called for each consumed message. */
     setHandler(onMessage) {
         this.onMessage = onMessage;
     }
+    /** Connect producer + consumer; subscribe to request topic. */
     async start() {
-        // connect producer first
+        // Producer connect (await "ready")
         await new Promise((resolve, reject) => {
             this.producer
                 .on("ready", () => resolve())
                 .on("event.error", (err) => reject(err));
             this.producer.connect();
         });
-        // drain internal queue regularly
+        // Poll producer periodically (good practice with librdkafka in Node)
         this.pollTimer = setInterval(() => {
             try {
                 this.producer.poll();
             }
-            catch { /* ignore */ }
+            catch {
+                // ignore
+            }
         }, 100);
-        // then consumer
-        await new Promise((resolve, _reject) => {
+        // Consumer connect (await "ready"), then subscribe & consume
+        await new Promise((resolve) => {
             this.consumer
                 .on("ready", () => {
                 this.consumer.subscribe([this.cfg.requestTopic]);
@@ -58,9 +66,9 @@ export class RpcKafka {
                 resolve();
             })
                 .on("data", (m) => {
-                if (!m.value)
-                    return;
-                this.onMessage?.(m);
+                // only pass through messages with a value
+                if (m.value)
+                    this.onMessage?.(m);
             })
                 .on("event.error", (err) => {
                 console.error("[rpc] consumer error", err);
@@ -70,7 +78,9 @@ export class RpcKafka {
             });
             this.consumer.connect();
         });
+        console.log("[rpc] kafka ready", this.cfg);
     }
+    /** Disconnect both ends and clear timers */
     stop() {
         if (this.pollTimer)
             clearInterval(this.pollTimer);
@@ -83,16 +93,19 @@ export class RpcKafka {
         }
         catch { }
     }
-    /** resilient produce with small retry when librdkafka queue is full */
+    /**
+     * Resilient produce with small retries when the local queue is full.
+     * This happens transiently under load; we poll & retry quickly.
+     */
     produceSafe(topic, key, value, attempt = 0) {
         try {
             this.producer.produce(topic, null, value, key);
         }
         catch (e) {
             const msg = String(e?.message || e);
-            const queueFull = e?.code === -184 /* RD_KAFKA_RESP_ERR__QUEUE_FULL */ ||
-                msg.toLowerCase().includes("queue");
+            const queueFull = e?.code === -184 || msg.toLowerCase().includes("queue");
             if (queueFull && attempt < 10) {
+                // give librdkafka a chance to drain and retry quickly
                 this.producer.poll();
                 setTimeout(() => this.produceSafe(topic, key, value, attempt + 1), 25);
                 return;

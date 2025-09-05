@@ -2,33 +2,29 @@
 import * as dotenv from "dotenv";
 import { Buffer } from "node:buffer";
 import * as flatbuffers from "flatbuffers";
-// protocol barrels
-import { SqlRpc as sr } from "@cladbe/sql-protocol";
-// your postgres manager lib
-import * as pgm from "@cladbe/postgres_manager";
-// our Kafka wrapper (make sure this file is at src/rpc/kafka.ts)
 import { RpcKafka } from "./kafka.js";
+// ---- Generated protocol barrels (FlatBuffers) ----
+import { SqlRpc as sr, SqlSchema as sc } from "@cladbe/sql-protocol";
 const SqlRpc = sr.SqlRpc;
+const SqlSchema = sc.SqlSchema;
+// ---- Your Postgres manager (singleton) + request classes ----
+import { NullsSortOrder, PostgresManager, SQLDataFilterType, SQLFilterWrapperType, } from "@cladbe/postgres_manager";
+import { GetDataDbRequest, GetSingleRecordRequest, AddSingleDbRequest, UpdateSingleDbRequest, DeleteRowDbRequest, TableExistsRequest, AggregationRequest, OrderSort, } from "@cladbe/postgres_manager";
+// ----------------------------------------------------------------------------------
 dotenv.config();
-const postgresManager = pgm.PostgresManager.getInstance();
-// ------- env -------
 const BROKERS = (process.env.KAFKA_BROKERS || "localhost:9092")
     .split(",")
     .map((s) => s.trim())
     .filter(Boolean);
 const REQ_TOPIC = process.env.SQL_RPC_REQUEST_TOPIC || "sql.rpc.requests";
 const GROUP_ID = process.env.SQL_RPC_GROUP_ID || "cladbe-postgres-rpc";
-// simple method name helper for nicer logs
-const MethodName = {
-    [SqlRpc.RpcMethod.GET_DATA]: "GET_DATA",
-    [SqlRpc.RpcMethod.GET_SINGLE]: "GET_SINGLE",
-    [SqlRpc.RpcMethod.ADD_SINGLE]: "ADD_SINGLE",
-    [SqlRpc.RpcMethod.UPDATE_SINGLE]: "UPDATE_SINGLE",
-    [SqlRpc.RpcMethod.DELETE_ROW]: "DELETE_ROW",
-    [SqlRpc.RpcMethod.CREATE_TABLE]: "CREATE_TABLE",
-    [SqlRpc.RpcMethod.TABLE_EXISTS]: "TABLE_EXISTS",
-    [SqlRpc.RpcMethod.RUN_AGGREGATION]: "RUN_AGGREGATION",
-};
+// Kafka wrapper: consume requests, produce replies
+const rpc = new RpcKafka({
+    brokers: BROKERS,
+    groupId: GROUP_ID,
+    requestTopic: REQ_TOPIC,
+});
+// ============================ FlatBuffers helpers ============================
 function bbFrom(buf) {
     return new flatbuffers.ByteBuffer(new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength));
 }
@@ -56,231 +52,613 @@ function errResponse(builder, correlationId, code, message) {
     builder.finish(env);
     return Buffer.from(builder.asUint8Array());
 }
-// ----- encoders for response union -----
-function encodeRowsJson(b, rows) {
-    const offs = rows.map((r) => b.createString(r));
-    const vec = SqlRpc.RowsJson.createRowsVector(b, offs);
-    SqlRpc.RowsJson.startRowsJson(b);
-    SqlRpc.RowsJson.addRows(b, vec);
-    const off = SqlRpc.RowsJson.endRowsJson(b);
+// ----- response payload encoders (FlatBuffers) -----
+function encodeRowsJson(builder, rows) {
+    const rowOffsets = rows.map((r) => builder.createString(r));
+    const vec = SqlRpc.RowsJson.createRowsVector(builder, rowOffsets);
+    SqlRpc.RowsJson.startRowsJson(builder);
+    SqlRpc.RowsJson.addRows(builder, vec);
+    const off = SqlRpc.RowsJson.endRowsJson(builder);
     return { off, type: SqlRpc.RpcResponse.RowsJson };
 }
-function encodeRowJson(b, row) {
-    const s = b.createString(row);
-    SqlRpc.RowJson.startRowJson(b);
-    SqlRpc.RowJson.addRow(b, s);
-    const off = SqlRpc.RowJson.endRowJson(b);
-    return { off, type: SqlRpc.RpcResponse.RowJson };
+function encodeRowJson(builder, row) {
+    const r = builder.createString(row);
+    SqlRpc.RowJson.startRowJson(builder);
+    SqlRpc.RowJson.addRow(builder, r);
+    const off = SqlRpc.RowJson.endRowJson(builder);
+    return { off, type: sr.SqlRpc.RpcResponse.RowJson };
 }
-function encodeBool(b, v) {
-    SqlRpc.BoolRes.startBoolRes(b);
-    SqlRpc.BoolRes.addValue(b, v);
-    const off = SqlRpc.BoolRes.endBoolRes(b);
-    return { off, type: SqlRpc.RpcResponse.BoolRes };
+function encodeBool(builder, value) {
+    SqlRpc.BoolRes.startBoolRes(builder);
+    SqlRpc.BoolRes.addValue(builder, value);
+    const off = SqlRpc.BoolRes.endBoolRes(builder);
+    return { off, type: sr.SqlRpc.RpcResponse.BoolRes };
 }
-function encodeAgg(b) {
-    SqlRpc.AggRes.startAggRes(b);
-    // TODO: map to SqlSchema.DataHelperAggregation
-    const off = SqlRpc.AggRes.endAggRes(b);
-    return { off, type: SqlRpc.RpcResponse.AggRes };
+// NEW: RowsWithCursor (rows + cursor[] as CursorEntry[])
+function encodeRowsWithCursor(builder, rows, cursor) {
+    // rows
+    const rowOffsets = rows.map((r) => builder.createString(r));
+    const rowsVec = SqlRpc.RowsWithCursor.createRowsVector(builder, rowOffsets);
+    // cursor → encode each value as StringValue (safe default)
+    const cursorEntries = [];
+    for (const [field, value] of Object.entries(cursor)) {
+        const fOff = builder.createString(field);
+        const vOff = builder.createString(String(value));
+        SqlSchema.StringValue.startStringValue(builder);
+        SqlSchema.StringValue.addValue(builder, vOff);
+        const strValOff = SqlSchema.StringValue.endStringValue(builder);
+        SqlSchema.CursorEntry.startCursorEntry(builder);
+        SqlSchema.CursorEntry.addField(builder, fOff);
+        SqlSchema.CursorEntry.addValueType(builder, SqlSchema.FilterValue.StringValue);
+        SqlSchema.CursorEntry.addValue(builder, strValOff);
+        const ceOff = SqlSchema.CursorEntry.endCursorEntry(builder);
+        cursorEntries.push(ceOff);
+    }
+    const cursorVec = SqlRpc.RowsWithCursor.createCursorVector(builder, cursorEntries);
+    SqlRpc.RowsWithCursor.startRowsWithCursor(builder);
+    SqlRpc.RowsWithCursor.addRows(builder, rowsVec);
+    SqlRpc.RowsWithCursor.addCursor(builder, cursorVec);
+    const off = SqlRpc.RowsWithCursor.endRowsWithCursor(builder);
+    return { off, type: sr.SqlRpc.RpcResponse.RowsWithCursor };
 }
-// ----- handlers (call your pg manager) -----
+// Until you wire a real FB response for aggregations, keep placeholder.
+function encodeAggPlaceholder(builder) {
+    SqlRpc.AggRes.startAggRes(builder);
+    const off = SqlRpc.AggRes.endAggRes(builder);
+    return { off, type: sr.SqlRpc.RpcResponse.AggRes };
+}
+// ============================ Enum + union mappers ============================
+function mapOrderSort(s) {
+    switch (s) {
+        case SqlSchema.OrderSort.ASC_DEFAULT:
+            return OrderSort.ASC_DEFAULT;
+        case SqlSchema.OrderSort.ASC_NULLS_FIRST:
+            return OrderSort.ASC_NULLS_FIRST;
+        case SqlSchema.OrderSort.ASC_NULLS_LAST:
+            return OrderSort.ASC_NULLS_LAST;
+        case SqlSchema.OrderSort.DESC_DEFAULT:
+            return OrderSort.DESC_DEFAULT;
+        case SqlSchema.OrderSort.DESC_NULLS_FIRST:
+            return OrderSort.DESC_NULLS_FIRST;
+        case SqlSchema.OrderSort.DESC_NULLS_LAST:
+            return OrderSort.DESC_NULLS_LAST;
+        default:
+            return OrderSort.DESC_DEFAULT;
+    }
+}
+function mapWrapperType(t) {
+    if (t == null)
+        return undefined;
+    switch (t) {
+        case SqlSchema.SQLFilterWrapperType.and:
+            return SQLFilterWrapperType.and;
+        case SqlSchema.SQLFilterWrapperType.or:
+            return SQLFilterWrapperType.or;
+        default:
+            return undefined;
+    }
+}
+function mapNullsSortOrder(n) {
+    switch (n) {
+        case SqlSchema.NullsSortOrder.first:
+            return NullsSortOrder.first;
+        case SqlSchema.NullsSortOrder.last:
+            return NullsSortOrder.last;
+        case SqlSchema.NullsSortOrder.default_:
+        default:
+            return NullsSortOrder.default_;
+    }
+}
+function mapFilterType(ft) {
+    if (ft == null)
+        return undefined;
+    switch (ft) {
+        // Basic Comparison
+        case SqlSchema.BasicSqlDataFilterType.equals: return SQLDataFilterType.equals;
+        case SqlSchema.BasicSqlDataFilterType.notEquals: return SQLDataFilterType.notEquals;
+        case SqlSchema.BasicSqlDataFilterType.lessThan: return SQLDataFilterType.lessThan;
+        case SqlSchema.BasicSqlDataFilterType.lessThanOrEquals: return SQLDataFilterType.lessThanOrEquals;
+        case SqlSchema.BasicSqlDataFilterType.greaterThan: return SQLDataFilterType.greaterThan;
+        case SqlSchema.BasicSqlDataFilterType.greaterThanOrEquals: return SQLDataFilterType.greaterThanOrEquals;
+        // NULL
+        case SqlSchema.BasicSqlDataFilterType.isNull: return SQLDataFilterType.isNull;
+        case SqlSchema.BasicSqlDataFilterType.isNotNull: return SQLDataFilterType.isNotNull;
+        // Regex & Pattern
+        case SqlSchema.BasicSqlDataFilterType.regex: return SQLDataFilterType.regex;
+        case SqlSchema.BasicSqlDataFilterType.notRegex: return SQLDataFilterType.notRegex;
+        case SqlSchema.BasicSqlDataFilterType.startsWith: return SQLDataFilterType.startsWith;
+        case SqlSchema.BasicSqlDataFilterType.endsWith: return SQLDataFilterType.endsWith;
+        case SqlSchema.BasicSqlDataFilterType.contains: return SQLDataFilterType.contains;
+        case SqlSchema.BasicSqlDataFilterType.notContains: return SQLDataFilterType.notContains;
+        // Array
+        case SqlSchema.BasicSqlDataFilterType.arrayContains: return SQLDataFilterType.arrayContains;
+        case SqlSchema.BasicSqlDataFilterType.arrayContainedBy: return SQLDataFilterType.arrayContainedBy;
+        case SqlSchema.BasicSqlDataFilterType.arrayOverlaps: return SQLDataFilterType.arrayOverlaps;
+        case SqlSchema.BasicSqlDataFilterType.arrayEquals: return SQLDataFilterType.arrayEquals;
+        case SqlSchema.BasicSqlDataFilterType.arrayNotEquals: return SQLDataFilterType.arrayNotEquals;
+        case SqlSchema.BasicSqlDataFilterType.arrayEmpty: return SQLDataFilterType.arrayEmpty;
+        case SqlSchema.BasicSqlDataFilterType.arrayNotEmpty: return SQLDataFilterType.arrayNotEmpty;
+        case SqlSchema.BasicSqlDataFilterType.arrayLength: return SQLDataFilterType.arrayLength;
+        // JSON
+        case SqlSchema.BasicSqlDataFilterType.jsonContains: return SQLDataFilterType.jsonContains;
+        case SqlSchema.BasicSqlDataFilterType.jsonContainedBy: return SQLDataFilterType.jsonContainedBy;
+        case SqlSchema.BasicSqlDataFilterType.jsonHasKey: return SQLDataFilterType.jsonHasKey;
+        case SqlSchema.BasicSqlDataFilterType.jsonHasAnyKey: return SQLDataFilterType.jsonHasAnyKey;
+        case SqlSchema.BasicSqlDataFilterType.jsonHasAllKeys: return SQLDataFilterType.jsonHasAllKeys;
+        case SqlSchema.BasicSqlDataFilterType.jsonGetField: return SQLDataFilterType.jsonGetField;
+        case SqlSchema.BasicSqlDataFilterType.jsonGetFieldAsText: return SQLDataFilterType.jsonGetFieldAsText;
+        // Range
+        case SqlSchema.BasicSqlDataFilterType.between: return SQLDataFilterType.between;
+        case SqlSchema.BasicSqlDataFilterType.notBetween: return SQLDataFilterType.notBetween;
+        case SqlSchema.BasicSqlDataFilterType.rangeContains: return SQLDataFilterType.rangeContains;
+        case SqlSchema.BasicSqlDataFilterType.rangeContainedBy: return SQLDataFilterType.rangeContainedBy;
+        // Set
+        case SqlSchema.BasicSqlDataFilterType.inList: return SQLDataFilterType.in_;
+        case SqlSchema.BasicSqlDataFilterType.notInList: return SQLDataFilterType.notIn;
+        default:
+            return undefined;
+    }
+}
+/** Convert a FilterValue union (type + value getter) to a plain JS value */
+function readFilterFromUnion(type, getVal) {
+    switch (type) {
+        case SqlSchema.FilterValue.StringValue: {
+            const o = new SqlSchema.StringValue();
+            return getVal(o) ? o.value() : null;
+        }
+        case SqlSchema.FilterValue.NumberValue: {
+            const o = new SqlSchema.NumberValue();
+            return getVal(o) ? o.value() : null;
+        }
+        case SqlSchema.FilterValue.Int64Value: {
+            const o = new SqlSchema.Int64Value();
+            return getVal(o) ? Number(o.value()) : null;
+        }
+        case SqlSchema.FilterValue.BoolValue: {
+            const o = new SqlSchema.BoolValue();
+            return getVal(o) ? !!o.value() : null;
+        }
+        case SqlSchema.FilterValue.NullValue:
+            return null;
+        case SqlSchema.FilterValue.TimestampValue: {
+            const o = new SqlSchema.TimestampValue();
+            return getVal(o) ? Number(o.epoch()) : null;
+        }
+        case SqlSchema.FilterValue.StringList: {
+            const o = new SqlSchema.StringList();
+            if (!getVal(o))
+                return null;
+            const arr = [];
+            for (let i = 0; i < (o.valuesLength() || 0); i++) {
+                const s = o.values(i);
+                if (s != null)
+                    arr.push(s);
+            }
+            return arr;
+        }
+        case SqlSchema.FilterValue.Int64List: {
+            const o = new SqlSchema.Int64List();
+            if (!getVal(o))
+                return null;
+            const arr = [];
+            for (let i = 0; i < (o.valuesLength() || 0); i++) {
+                const n = o.values(i);
+                if (n != null)
+                    arr.push(Number(n));
+            }
+            return arr;
+        }
+        case SqlSchema.FilterValue.Float64List: {
+            const o = new SqlSchema.Float64List();
+            if (!getVal(o))
+                return null;
+            const arr = [];
+            for (let i = 0; i < (o.valuesLength() || 0); i++) {
+                const n = o.values(i);
+                if (n != null)
+                    arr.push(n);
+            }
+            return arr;
+        }
+        case SqlSchema.FilterValue.BoolList: {
+            const o = new SqlSchema.BoolList();
+            if (!getVal(o))
+                return null;
+            const arr = [];
+            for (let i = 0; i < (o.valuesLength() || 0); i++) {
+                const n = o.values(i);
+                if (n != null)
+                    arr.push(!!n);
+            }
+            return arr;
+        }
+        default:
+            return null;
+    }
+}
+// ============================ Spec → Manager mappers ============================
+/** Recursively read BasicSqlDataFilterWrapper into manager’s filter tree */
+function readFilterWrapper(w) {
+    if (!w)
+        return undefined;
+    const wrapperType = mapWrapperType(w.filterWrapperType());
+    const filtersLen = w.filtersLength() || 0;
+    const outFilters = [];
+    for (let i = 0; i < filtersLen; i++) {
+        const kind = w.filtersType(i);
+        if (kind === SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilterWrapper) {
+            const nested = new SqlSchema.BasicSqlDataFilterWrapper();
+            const got = w.filters(i, nested);
+            const nestedMapped = readFilterWrapper(got);
+            if (nestedMapped)
+                outFilters.push(nestedMapped);
+            continue;
+        }
+        if (kind === SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilter) {
+            const filt = new SqlSchema.BasicSqlDataFilter();
+            const got = w.filters(i, filt);
+            if (!got)
+                continue;
+            const ft = mapFilterType(got.filterType());
+            if (!ft)
+                continue;
+            const mod = got.modifier();
+            const valueType = got.valueType();
+            const value = readFilterFromUnion(valueType, (o) => got.value(o));
+            const mapped = {
+                fieldName: got.fieldName() || "",
+                value,
+                filterType: ft,
+                modifier: mod
+                    ? {
+                        distinct: !!mod.distinct(),
+                        caseInSensitive: !!(mod.caseInsensitive?.() ?? false),
+                        nullsOrder: mapNullsSortOrder(mod.nullsOrder?.()),
+                    }
+                    : {
+                        caseInSensitive: false,
+                        nullsOrder: NullsSortOrder.default_,
+                    },
+            };
+            outFilters.push(mapped);
+            continue;
+        }
+    }
+    return {
+        filterWrapperType: wrapperType ?? SQLFilterWrapperType.and,
+        filters: outFilters,
+    };
+}
+/** Extract SqlQuerySpec from GetDataReq if present (prefer simple accessor) */
+function getQuerySpec(req) {
+    try {
+        const maybe = req.spec?.();
+        return maybe || null;
+    }
+    catch {
+        return null;
+    }
+}
+/** Extract AggregationSpec from RunAggregationReq if present */
+function getAggSpec(req) {
+    try {
+        const maybe = req.spec?.();
+        return maybe || null;
+    }
+    catch {
+        return null;
+    }
+}
+// ============================ Handlers ============================
+let __pgSingleton;
+/** Lazy accessor so tests/mocks can swap before first use */
+export function getPg() {
+    if (!__pgSingleton)
+        __pgSingleton = PostgresManager.getInstance();
+    return __pgSingleton;
+}
+/** (Optional) test hook to inject a fake */
+export function __setPgForTest(x) {
+    __pgSingleton = x;
+}
+/** GET_DATA → GetDataDbRequest (supports legacy fields and union spec) */
 async function handleGetData(req) {
     const companyId = req.companyId() || "";
     const tableName = req.tableName() || "";
-    const limit = req.limit();
-    const offset = req.offset();
-    console.log(`[rpc-worker] → pg.getData`, { companyId, tableName, limit, offset });
-    const rows = postgresManager.getData(new pgm.GetDataDbRequest(tableName, companyId));
-    const out = (rows || []).map((r) => JSON.stringify(r));
-    console.log(`[rpc-worker] ← pg.getData OK`, { count: out.length });
-    return { rows: out };
-}
-async function handleGetSingle(req) {
-    const row = await pgm.getSingleRecord({
-        companyId: req.companyId(),
-        tableName: req.tableName(),
-        primaryKeyColumn: req.primaryKeyColumn(),
-        primaryId: req.primaryId(),
-    });
-    return { row: row ? JSON.stringify(row) : null };
-}
-async function handleAddSingle(req) {
-    const added = await pgm.addSingleRecord({
-        companyId: req.companyId(),
-        tableName: req.tableName(),
-        primaryKeyColumn: req.primaryKeyColumn(),
-        data: JSON.parse(req.rowJson() || "{}"),
-    });
-    return { rows: (added || []).map((r) => JSON.stringify(r)) };
-}
-async function handleUpdateSingle(req) {
-    const updated = await pgm.updateSingleRecord({
-        companyId: req.companyId(),
-        tableName: req.tableName(),
-        primaryKeyColumn: req.primaryKeyColumn(),
-        primaryId: req.primaryId(),
-        updates: JSON.parse(req.updatesJson() || "{}"),
-    });
-    return { rows: (updated || []).map((r) => JSON.stringify(r)) };
-}
-async function handleDeleteRow(req) {
-    const ok = await pgm.deleteRow({
-        companyId: req.companyId(),
-        tableName: req.tableName(),
-        primaryKeyColumn: req.primaryKeyColumn(),
-        primaryId: req.primaryId(),
-    });
-    return { ok: !!ok };
-}
-async function handleCreateTable(_req) {
-    // TODO: map schema → pg
-    return { ok: false };
-}
-async function handleTableExists(req) {
-    const ok = await pgm.tableExists({
-        companyId: req.companyId(),
-        tableName: req.tableName(),
-    });
-    return { ok: !!ok };
-}
-async function handleRunAggregation(_req) {
-    return { agg: {} };
-}
-// ----- start function with logs -----
-export async function startRpcWorker() {
-    console.log(`[rpc-worker] starting`, { brokers: BROKERS.join(","), groupId: GROUP_ID, requestTopic: REQ_TOPIC });
-    const rpc = new RpcKafka({
-        brokers: BROKERS,
-        groupId: GROUP_ID,
-        requestTopic: REQ_TOPIC,
-    });
-    rpc.setHandler(async (m) => {
-        if (!m.value)
-            return;
-        const keyStr = m.key
-            ? (Buffer.isBuffer(m.key) ? m.key.toString("utf8") : String(m.key))
-            : "";
-        console.log(`[rpc-worker] ⇐ kafka`, {
-            topic: m.topic,
-            partition: m.partition,
-            offset: m.offset,
-            key: keyStr,
-            valueBytes: m.value.byteLength,
-            ts: m.timestamp,
-        });
-        const bb = bbFrom(m.value);
-        const req = SqlRpc.RequestEnvelope.getRootAsRequestEnvelope(bb);
-        const correlationId = req.correlationId() || "";
-        const replyTopic = req.replyTopic() || "sql.rpc.responses";
-        const method = req.method();
-        const methodName = MethodName[method] ?? String(method);
-        console.log(`[rpc-worker] ⇢ decode`, {
-            correlationId, replyTopic, method: methodName,
-        });
-        const builder = new flatbuffers.Builder(1024);
-        try {
-            let respBuf;
-            switch (method) {
-                case SqlRpc.RpcMethod.GET_DATA: {
-                    const payload = new SqlRpc.GetDataReq();
-                    // @ts-ignore union
-                    req.payload(payload);
-                    console.log(`[rpc-worker] • GET_DATA payload`, {
-                        companyId: payload.companyId(), tableName: payload.tableName(),
-                        limit: payload.limit(), offset: payload.offset(), strictAfter: payload.strictAfter()
-                    });
-                    const { rows } = await handleGetData(payload);
-                    const p = encodeRowsJson(builder, rows);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.GET_SINGLE: {
-                    const payload = new SqlRpc.GetSingleReq();
-                    // @ts-ignore union
-                    req.payload(payload);
-                    const { row } = await handleGetSingle(payload);
-                    const p = encodeRowJson(builder, row ?? "{}");
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.ADD_SINGLE: {
-                    const payload = new SqlRpc.AddSingleReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { rows } = await handleAddSingle(payload);
-                    const p = encodeRowsJson(builder, rows);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.UPDATE_SINGLE: {
-                    const payload = new SqlRpc.UpdateSingleReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { rows } = await handleUpdateSingle(payload);
-                    const p = encodeRowsJson(builder, rows);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.DELETE_ROW: {
-                    const payload = new SqlRpc.DeleteRowReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { ok } = await handleDeleteRow(payload);
-                    const p = encodeBool(builder, ok);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.CREATE_TABLE: {
-                    const payload = new SqlRpc.CreateTableReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { ok } = await handleCreateTable(payload);
-                    const p = encodeBool(builder, ok);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.TABLE_EXISTS: {
-                    const payload = new SqlRpc.TableExistsReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { ok } = await handleTableExists(payload);
-                    const p = encodeBool(builder, ok);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                case SqlRpc.RpcMethod.RUN_AGGREGATION: {
-                    const payload = new SqlRpc.RunAggregationReq();
-                    // @ts-ignore
-                    req.payload(payload);
-                    const { agg } = await handleRunAggregation(payload);
-                    console.log(`[rpc-worker] • RUN_AGGREGATION result keys`, { keys: Object.keys(agg || {}) });
-                    const p = encodeAgg(builder);
-                    respBuf = okResponse(builder, correlationId, p.off, p.type);
-                    break;
-                }
-                default: {
-                    respBuf = errResponse(builder, correlationId, SqlRpc.ErrorCode.BAD_REQUEST, `Unknown method: ${method}`);
-                }
-            }
-            if (respBuf) {
-                console.log(`[rpc-worker] ⇒ send`, {
-                    correlationId, replyTopic, bytes: respBuf.byteLength
-                });
-                rpc.produceSafe(replyTopic, correlationId || "", respBuf);
-            }
-        }
-        catch (e) {
-            console.error(`[rpc-worker] ✖ handler error`, {
-                correlationId, method: methodName, err: String(e?.message || e)
+    // wrapper → filters tree
+    const wrapper = req.wrapper();
+    const filters = wrapper ? [readFilterWrapper(wrapper)].filter(Boolean) : undefined;
+    // order[]
+    let orderKeys;
+    const orderLen = req.orderLength?.() ?? 0;
+    if (orderLen > 0) {
+        orderKeys = [];
+        for (let i = 0; i < orderLen; i++) {
+            const ok = req.order(i);
+            if (!ok)
+                continue;
+            orderKeys.push({
+                field: ok.field() || "",
+                sort: mapOrderSort(ok.sort()),
             });
-            try {
-                const errBuf = errResponse(builder, correlationId, SqlRpc.ErrorCode.INTERNAL, String(e?.message || e));
-                rpc.produceSafe(replyTopic, correlationId || "", errBuf);
-            }
-            catch { /* ignore */ }
         }
+    }
+    // cursor[]
+    let cursor;
+    const cursorLen = req.cursorLength?.() ?? 0;
+    if (cursorLen > 0) {
+        const c = {};
+        for (let i = 0; i < cursorLen; i++) {
+            const ce = req.cursor(i);
+            if (!ce)
+                continue;
+            const name = ce.field() || "";
+            const t = ce.valueType();
+            const value = readFilterFromUnion(t, (obj) => ce.value(obj));
+            if (name)
+                c[name] = value;
+        }
+        if (Object.keys(c).length)
+            cursor = c;
+    }
+    const mgrReq = new GetDataDbRequest({
+        tableName,
+        companyId,
+        filters,
+        orderKeys,
+        cursor,
+        strictAfter: req.strictAfter(), // default true in schema
+        limit: req.limit?.() ?? undefined, // 0 → undefined (no limit)
+        offset: req.offset?.() ?? undefined, // legacy; avoid with cursor
     });
+    const mgrResp = await getPg().getData(mgrReq);
+    if (Array.isArray(mgrResp)) {
+        const rows = (mgrResp || []).map((r) => JSON.stringify(r));
+        return { rows };
+    }
+    const rows = (mgrResp?.rows || []).map((r) => JSON.stringify(r));
+    const nextCursor = mgrResp?.cursor && typeof mgrResp.cursor === "object" && Object.keys(mgrResp.cursor).length
+        ? mgrResp.cursor
+        : undefined;
+    return { rows, cursor: nextCursor };
+}
+/** GET_SINGLE → GetSingleRecordRequest */
+async function handleGetSingle(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const primaryKeyColumn = req.primaryKeyColumn?.() || "id";
+    const primaryId = req.primaryId?.() || "";
+    const mgrReq = new GetSingleRecordRequest({
+        tableName,
+        companyId,
+        primaryKeyColumn,
+        primaryId,
+    });
+    const row = await getPg().getData(mgrReq);
+    return row ? JSON.stringify(row) : null;
+}
+/** ADD_SINGLE → AddSingleDbRequest */
+async function handleAddSingle(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const primaryKeyColumn = req.primaryKeyColumn?.() || "id";
+    const rowJson = req.rowJson?.() || "{}";
+    const mgrReq = new AddSingleDbRequest({
+        tableName,
+        companyId,
+        primaryKeyColumn,
+        data: JSON.parse(rowJson),
+    });
+    const added = await getPg().editData(mgrReq);
+    return (added || []).map((r) => JSON.stringify(r));
+}
+/** UPDATE_SINGLE → UpdateSingleDbRequest */
+async function handleUpdateSingle(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const primaryKeyColumn = req.primaryKeyColumn?.() || "id";
+    const primaryId = req.primaryId?.() || "";
+    const updatesJson = req.updatesJson?.() || "{}";
+    const mgrReq = new UpdateSingleDbRequest({
+        tableName,
+        companyId,
+        primaryKeyColumn,
+        primaryId,
+        updates: JSON.parse(updatesJson),
+    });
+    const updated = await getPg().editData(mgrReq);
+    return (updated || []).map((r) => JSON.stringify(r));
+}
+/** DELETE_ROW → DeleteRowDbRequest */
+async function handleDeleteRow(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const primaryKeyColumn = req.primaryKeyColumn?.() || "id";
+    const primaryId = req.primaryId?.() || "";
+    const mgrReq = new DeleteRowDbRequest({
+        tableName,
+        companyId,
+        primaryKeyColumn,
+        primaryId,
+    });
+    const deleted = await getPg().deleteRequest(mgrReq);
+    return Array.isArray(deleted) ? deleted.length > 0 : !!deleted;
+}
+/** CREATE_TABLE → CreateTableDbRequest (stub for now) */
+async function handleCreateTable(_req) {
+    throw new Error("CreateTable is not implemented yet");
+}
+/** TABLE_EXISTS → TableExistsRequest */
+async function handleTableExists(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const mgrReq = new TableExistsRequest({ tableName, companyId });
+    return await getPg().tableExists(mgrReq);
+}
+/** RUN_AGGREGATION → AggregationRequest (maps AggregationSpec if present) */
+async function handleRunAggregation(req) {
+    const companyId = req.companyId() || "";
+    const tableName = req.tableName() || "";
+    const spec = getAggSpec(req);
+    const sumFieldsLegacy = vecToArray(req.sumFieldsLength?.() ?? 0, (i) => req.sumFields?.(i));
+    const averageFieldsLegacy = vecToArray(req.averageFieldsLength?.() ?? 0, (i) => req.averageFields?.(i));
+    const minimumFieldsLegacy = vecToArray(req.minimumFieldsLength?.() ?? 0, (i) => req.minimumFields?.(i));
+    const maximumFieldsLegacy = vecToArray(req.maximumFieldsLength?.() ?? 0, (i) => req.maximumFields?.(i));
+    const countEnabledLegacy = req.countEnabled?.() ?? false;
+    const sumFields = spec
+        ? vecToArray(spec.sumFieldsLength?.() ?? 0, (i) => spec.sumFields?.(i))
+        : sumFieldsLegacy;
+    const averageFields = spec
+        ? vecToArray(spec.averageFieldsLength?.() ?? 0, (i) => spec.averageFields?.(i))
+        : averageFieldsLegacy;
+    const minimumFields = spec
+        ? vecToArray(spec.minimumFieldsLength?.() ?? 0, (i) => spec.minimumFields?.(i))
+        : minimumFieldsLegacy;
+    const maximumFields = spec
+        ? vecToArray(spec.maximumFieldsLength?.() ?? 0, (i) => spec.maximumFields?.(i))
+        : maximumFieldsLegacy;
+    const countEnabled = spec ? !!(spec.countEnabled?.() ?? false) : countEnabledLegacy;
+    const filters = spec ? [readFilterWrapper(spec.wrapper())].filter(Boolean) : undefined;
+    const mgrReq = new AggregationRequest({
+        tableName,
+        companyId,
+        sumFields,
+        averageFields,
+        minimumFields,
+        maximumFields,
+        countEnabled,
+        filters,
+    });
+    return await getPg().runAggregationQuery(mgrReq);
+}
+function vecToArray(len, get) {
+    const out = [];
+    for (let i = 0; i < len; i++) {
+        const v = get(i);
+        if (v != null)
+            out.push(v);
+    }
+    return out;
+}
+// ============================ main dispatcher ============================
+rpc.setHandler(async (m) => {
+    const value = m.value;
+    const bb = bbFrom(value);
+    const req = SqlRpc.RequestEnvelope.getRootAsRequestEnvelope(bb);
+    const correlationId = req.correlationId() || "";
+    const replyTopic = req.replyTopic() || process.env.SQL_RPC_RESPONSE_TOPIC || "sql.rpc.responses";
+    const method = req.method();
+    const b = new flatbuffers.Builder(1024);
+    try {
+        console.log("[rpc] ⇐ request", {
+            method: SqlRpc.RpcMethod[method],
+            corr: correlationId,
+            replyTopic,
+        });
+        switch (method) {
+            case SqlRpc.RpcMethod.GET_DATA: {
+                const payload = new SqlRpc.GetDataReq();
+                // @ts-ignore union read
+                req.payload(payload);
+                const { rows, cursor } = await handleGetData(payload);
+                const p = cursor
+                    ? encodeRowsWithCursor(b, rows, cursor)
+                    : encodeRowsJson(b, rows);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response GET_DATA", { corr: correlationId, rows: rows.length, withCursor: !!cursor });
+                return;
+            }
+            case SqlRpc.RpcMethod.GET_SINGLE: {
+                const payload = new SqlRpc.GetSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const rowJson = await handleGetSingle(payload);
+                const p = encodeRowJson(b, rowJson ?? "{}");
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response GET_SINGLE", { corr: correlationId, found: !!rowJson });
+                return;
+            }
+            case SqlRpc.RpcMethod.ADD_SINGLE: {
+                const payload = new SqlRpc.AddSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const rows = await handleAddSingle(payload);
+                const p = encodeRowsJson(b, rows);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response ADD_SINGLE", { corr: correlationId, rows: rows.length });
+                return;
+            }
+            case SqlRpc.RpcMethod.UPDATE_SINGLE: {
+                const payload = new SqlRpc.UpdateSingleReq();
+                // @ts-ignore
+                req.payload(payload);
+                const rows = await handleUpdateSingle(payload);
+                const p = encodeRowsJson(b, rows);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response UPDATE_SINGLE", { corr: correlationId, rows: rows.length });
+                return;
+            }
+            case SqlRpc.RpcMethod.DELETE_ROW: {
+                const payload = new SqlRpc.DeleteRowReq();
+                // @ts-ignore
+                req.payload(payload);
+                const ok = await handleDeleteRow(payload);
+                const p = encodeBool(b, ok);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response DELETE_ROW", { corr: correlationId, ok });
+                return;
+            }
+            case SqlRpc.RpcMethod.CREATE_TABLE: {
+                const payload = new SqlRpc.CreateTableReq();
+                // @ts-ignore
+                req.payload(payload);
+                const ok = await handleCreateTable(payload);
+                const p = encodeBool(b, ok);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response CREATE_TABLE", { corr: correlationId, ok });
+                return;
+            }
+            case SqlRpc.RpcMethod.TABLE_EXISTS: {
+                const payload = new SqlRpc.TableExistsReq();
+                // @ts-ignore
+                req.payload(payload);
+                const ok = await handleTableExists(payload);
+                const p = encodeBool(b, ok);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response TABLE_EXISTS", { corr: correlationId, ok });
+                return;
+            }
+            case SqlRpc.RpcMethod.RUN_AGGREGATION: {
+                const payload = new SqlRpc.RunAggregationReq();
+                // @ts-ignore
+                req.payload(payload);
+                const _agg = await handleRunAggregation(payload);
+                const p = encodeAggPlaceholder(b);
+                rpc.produceSafe(replyTopic, correlationId, okResponse(b, correlationId, p.off, p.type));
+                console.log("[rpc] ⇒ response RUN_AGGREGATION", { corr: correlationId, note: "placeholder AggRes" });
+                return;
+            }
+            default: {
+                const msg = `Unknown method: ${method}`;
+                rpc.produceSafe(replyTopic, correlationId, errResponse(b, correlationId, SqlRpc.ErrorCode.BAD_REQUEST, msg));
+                console.warn("[rpc] ✖ bad method", { corr: correlationId, method });
+                return;
+            }
+        }
+    }
+    catch (e) {
+        const msg = e?.message || String(e);
+        const buf = errResponse(b, correlationId, SqlRpc.ErrorCode.INTERNAL, msg);
+        rpc.produceSafe(replyTopic, correlationId, buf);
+        console.error("[rpc] handler error", { corr: correlationId, method: SqlRpc.RpcMethod[method], err: e });
+    }
+});
+// exported entry so your index.ts can start the worker
+export async function startRpcWorker() {
     await rpc.start();
-    console.log(`[rpc-worker] ready`, { brokers: BROKERS.join(","), reqTopic: REQ_TOPIC, groupId: GROUP_ID });
+    console.log("[rpc] worker started", {
+        brokers: BROKERS.join(","),
+        req: REQ_TOPIC,
+        groupId: GROUP_ID,
+    });
 }

@@ -1,0 +1,29 @@
+{
+  "name": "@cladbe/sql-codec",
+  "version": "0.1.0",
+  "description": "JSON ⇄ FlatBuffers codec for SqlRpc envelopes and payloads",
+  "license": "MIT",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    }
+  },
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -b",
+    "clean": "rimraf dist tsconfig.tsbuildinfo",
+    "dev": "tsc -w -b"
+  },
+  "dependencies": {
+    "@cladbe/sql-protocol": "file:../sql-protocol"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.12",
+    "rimraf": "^6.0.1",
+    "typescript": "^5.5.4"
+  }
+}

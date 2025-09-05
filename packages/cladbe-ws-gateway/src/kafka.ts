@@ -26,7 +26,7 @@ export type KafkaHandlers = {
  * unbounded buffering and heap growth.
  */
 export class GatewayConsumer {
-    private consumer: any; // KafkaConsumer type
+    private consumer: pkg.KafkaConsumer; // KafkaConsumer type
     private paused = false;
 
     constructor(
@@ -67,7 +67,7 @@ export class GatewayConsumer {
                 if (!key || !m.value) return;
 
                 // Toggle this for very noisy per-message logs:
-                // console.log('[cdc] message', { topic: m.topic, partition: m.partition, offset: m.offset, key, bytes: (m.value as Buffer).byteLength });
+                console.log('[cdc] message', { topic: m.topic, partition: m.partition, offset: m.offset, key, bytes: (m.value as Buffer).byteLength });
 
                 this.handlers.onMessage(key, m.value as Buffer, m);
             })

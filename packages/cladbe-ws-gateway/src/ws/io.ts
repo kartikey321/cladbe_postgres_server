@@ -3,7 +3,7 @@
 import type uWS from "uWebSockets.js";
 import { sessions } from "../state.js";
 import type { ServerMsg } from "../types.js";
-import { SLOW_SOCKETS } from "../delivery.js";
+import {markSlow, SLOW_SOCKETS} from "../delivery.js";
 
 /**
  * Send a JSON frame to a single WebSocket with backpressure handling.
@@ -24,7 +24,7 @@ export function safeSend(s: uWS.WebSocket<any>, msg: ServerMsg) {
   if (wrote) return;
 
   (st as any).sendQueue.push(buf);
-  if (!(st as any)._slow) { (st as any)._slow = true; (SLOW_SOCKETS as any)++; }
+  if (!(st as any)._slow) { (st as any)._slow = true; markSlow(); }
   if ((st as any).sendQueue.length > 1000) {
     (st as any).sendQueue.length = 0;
     s.send(JSON.stringify({ op: "error", code: "overflow", message: "reset-to-snapshot" }));

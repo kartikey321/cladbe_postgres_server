@@ -7,10 +7,12 @@
 
 import IORedis, { Redis } from "ioredis";
 import {
-    KEYDB_URL,
     KEYDB_PREFIX,
     HOTCACHE_MAX_DIFFS,
     HOTCACHE_RETENTION_MS,
+    KEYDB_HOST,
+    KEYDB_PORT,
+    KEYDB_PASS,
 } from "./config.js";
 
 type LsnString = string;
@@ -66,11 +68,10 @@ export class HotCache {
 
     /** Create a new HotCache instance; by default uses env-provided URL/prefix. */
     constructor(opts: HotCacheOpts = {}) {
-        this.redis = opts.redis ?? new Redis(opts.url ?? KEYDB_URL, {
-            // reasonable defaults; tune as needed
-            lazyConnect: false,
-            maxRetriesPerRequest: null,
-            enableReadyCheck: true,
+        this.redis = opts.redis ?? new Redis({
+            host: KEYDB_HOST,
+            port: Number(KEYDB_PORT),
+            password: KEYDB_PASS
         });
         this.prefix = (opts.prefix ?? KEYDB_PREFIX).replace(/\s+/g, "");
         this.maxDiffsPerKey = opts.maxDiffsPerKey ?? HOTCACHE_MAX_DIFFS;
@@ -79,23 +80,23 @@ export class HotCache {
     }
 
 
-      /**
-   * Fetch the ordered PK list for a page: LRANGE hcache:range:{hashId} 0 -1
-   * Returns [] if key is missing/expired.
-   */
-  async range(hashId: string): Promise<string[]> {
-    try {
-      const key = `${this.prefix}range:${hashId}`;
-      // node-redis v4
-      // const pks = await this.redis.lRange(key, 0, -1);
+    /**
+ * Fetch the ordered PK list for a page: LRANGE hcache:range:{hashId} 0 -1
+ * Returns [] if key is missing/expired.
+ */
+    async range(hashId: string): Promise<string[]> {
+        try {
+            const key = `${this.prefix}range:${hashId}`;
+            // node-redis v4
+            // const pks = await this.redis.lRange(key, 0, -1);
 
-      // ioredis
-      const pks = await (this as any).redis.lrange(key, 0, -1);
-      return Array.isArray(pks) ? pks.map(String) : [];
-    } catch {
-      return [];
+            // ioredis
+            const pks = await (this as any).redis.lrange(key, 0, -1);
+            return Array.isArray(pks) ? pks.map(String) : [];
+        } catch {
+            return [];
+        }
     }
-  }
 
     // ---------- Public API (unchanged shape) ----------
 

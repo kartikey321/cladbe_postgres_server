@@ -1,0 +1,3244 @@
+Project Overview
+===============
+
+Project Statistics:
+Total Files: 31
+Total Size: 109.32 KB
+
+File Types:
+  .ts: 23 files
+  no extension: 2 files
+  .json: 2 files
+  .cjs: 2 files
+  .sh: 1 files
+  .mjs: 1 files
+
+Detected Technologies:
+  - TypeScript
+
+Folder Structure (Tree)
+=====================
+Legend: ✓ = Included in output, ✗ = Excluded from output
+
+├── .env (921 B) ✓
+├── .gitignore (36 B) ✓
+├── package.json (771 B) ✓
+├── scripts/
+│   ├── install-rdkafka.sh (1.42 KB) ✓
+│   └── tap-sql-replies.cjs (2.00 KB) ✓
+├── src/
+│   ├── config.ts (2.19 KB) ✓
+│   ├── delivery.ts (4.64 KB) ✓
+│   ├── fb/
+│   │   ├── builders.ts (8.38 KB) ✓
+│   │   └── json-spec.ts (18.62 KB) ✓
+│   ├── kafka.ts (3.85 KB) ✓
+│   ├── keydb.ts (6.83 KB) ✓
+│   ├── lsn.ts (1.01 KB) ✓
+│   ├── main.ts (6.23 KB) ✓
+│   ├── mock-sql-worker.mjs (2.53 KB) ✓
+│   ├── query-control-producer.ts (1.58 KB) ✓
+│   ├── rpc/
+│   │   └── sql-rpc.ts (15.38 KB) ✓
+│   ├── seed-producer.ts (1.49 KB) ✓
+│   ├── state.ts (1.50 KB) ✓
+│   ├── test-producer.cjs (612 B) ✓
+│   ├── types-ext.d.ts (1.17 KB) ✓
+│   ├── types.ts (2.52 KB) ✓
+│   └── ws/
+│       ├── app.ts (1.15 KB) ✓
+│       ├── bus.ts (871 B) ✓
+│       ├── handlers.ts (5.74 KB) ✓
+│       ├── io.ts (1.25 KB) ✓
+│       ├── json-to-fb.ts (2.37 KB) ✓
+│       ├── rpc.ts (6.72 KB) ✓
+│       ├── schemas.ts (933 B) ✓
+│       ├── subscribe.ts (5.21 KB) ✓
+│       └── wire.ts (1.02 KB) ✓
+└── tsconfig.json (478 B) ✓
+
+==============
+
+File Name: .gitignore
+Size: 36 B
+Code:
+node_modules
+package-lock.json
+dist
+
+-------- [ Separator ] ------
+
+File Name: package.json
+Size: 771 B
+Code:
+{
+  "name": "cladbe-ws-gateway",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "tsx src/main.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/main.js",
+    "rdkafka:install": "bash ./scripts/install-rdkafka.sh"
+  },
+  "dependencies": {
+    "@cladbe/shared-config": "file:../shared-config",
+    "@cladbe/sql-protocol": "file:../sql-protocol",
+    "@cladbe/sql-codec": "file:../sql-codec",
+
+    "dotenv": "^17.2.1",
+    "flatbuffers": "^25.2.10",
+    "ioredis": "^5.7.0",
+    "node-rdkafka": "file:/root/node-rdkafka",
+    "uuid": "^9.0.1",
+    "uWebSockets.js": "uNetworking/uWebSockets.js#v20.48.0",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.30",
+    "tsx": "^4.7.0",
+    "typescript": "^5.4.5"
+  }
+}
+
+-------- [ Separator ] ------
+
+File Name: scripts/install-rdkafka.sh
+Size: 1.42 KB
+Code:
+#!/usr/bin/env bash
+set -euo pipefail
+
+# --- Config you can tweak if needed ---
+export BUILD_LIBRDKAFKA=0
+export PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-/usr/local/lib/pkgconfig}
+export LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-/usr/local/lib}
+export npm_config_unsafe_perm=${npm_config_unsafe_perm:-true}
+export JOBS=${JOBS:-1}
+# --------------------------------------
+
+echo "[rdkafka] Ensuring /usr/local/lib is in the runtime linker path..."
+if [ ! -f /etc/ld.so.conf.d/usr-local.conf ] || ! grep -q "/usr/local/lib" /etc/ld.so.conf.d/usr-local.conf; then
+  echo "  -> writing /etc/ld.so.conf.d/usr-local.conf (requires sudo)"
+  echo "/usr/local/lib" | sudo tee /etc/ld.so.conf.d/usr-local.conf >/dev/null
+  sudo ldconfig
+else
+  echo "  -> already set"
+fi
+
+echo "[rdkafka] pkg-config check:"
+pkg-config --modversion rdkafka || { echo "  !! rdkafka.pc not found in PKG_CONFIG_PATH=$PKG_CONFIG_PATH"; exit 1; }
+pkg-config --variable=includedir rdkafka
+
+echo "[rdkafka] Rebuilding node-rdkafka from source with env above..."
+# Rebuild only this dependency, no recursive installs
+npm rebuild node-rdkafka --build-from-source --foreground-scripts
+
+echo "[rdkafka] Verifying linkage to /usr/local..."
+NODE_MODULE_PATH="node_modules/node-rdkafka/build/Release/node-librdkafka.node"
+if [ ! -f "$NODE_MODULE_PATH" ]; then
+  echo "  !! Could not find $NODE_MODULE_PATH"
+  exit 1
+fi
+ldd "$NODE_MODULE_PATH" | grep -E 'librdkafka(\+\+)?\.so' || true
+
+echo "[rdkafka] Done."
+-------- [ Separator ] ------
+
+File Name: scripts/tap-sql-replies.cjs
+Size: 2.00 KB
+Code:
+// scripts/tap-sql-replies.cjs
+/* Tap the SQL RPC reply topic and log decoded envelopes */
+const Kafka = require("node-rdkafka");
+const flatbuffers = require("flatbuffers");
+const { SqlRpc: sr } = require("@cladbe/sql-protocol");
+const SqlRpc = sr.SqlRpc;
+
+const BROKERS = process.env.KAFKA_BROKERS || "localhost:9092";
+const TOPIC = process.env.SQL_RPC_REPLY_TOPIC || "sql.rpc.responses.ws";
+const GROUP = process.env.SQL_RPC_TAP_GROUP || "sql-rpc-reply-tap";
+
+function bbFrom(buf) {
+  return new flatbuffers.ByteBuffer(
+    new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength)
+  );
+}
+
+const cons = new Kafka.KafkaConsumer(
+  {
+    "metadata.broker.list": BROKERS,
+    "group.id": GROUP,
+    "enable.auto.commit": true,
+    "socket.keepalive.enable": true,
+    "allow.auto.create.topics": true,
+    "client.id": "tap-sql-replies",
+  },
+  { "auto.offset.reset": "latest" }
+);
+
+cons
+  .on("ready", () => {
+    console.log("[tap] ready; subscribing to", { BROKERS, TOPIC, GROUP });
+    cons.subscribe([TOPIC]);
+    cons.consume();
+  })
+  .on("data", (m) => {
+    const key = m.key
+      ? Buffer.isBuffer(m.key)
+        ? m.key.toString()
+        : String(m.key)
+      : "";
+    const bytes = m.value ? m.value.length : 0;
+
+    let corr = "";
+    let ok = false;
+    let code = 0;
+    let dtype = 0;
+
+    try {
+      console.log(m.value);
+      const bb = bbFrom(m.value);
+      const env = SqlRpc.ResponseEnvelope.getRootAsResponseEnvelope(bb);
+      corr = env.correlationId() || "";
+      ok = env.ok();
+      code = env.errorCode();
+      dtype = env.dataType();
+    } catch (e) {
+      console.error("[tap] decode error", e);
+    }
+
+    console.log("[tap] msg", {
+      topic: m.topic,
+      partition: m.partition,
+      offset: m.offset,
+      key,
+      corr,
+      ok,
+      errorCode: code,
+      dataType: dtype,
+      bytes,
+      ts: new Date(m.timestamp).toISOString(),
+    });
+  })
+  .on("event.error", (e) => console.error("[tap] consumer error", e))
+  .on("rebalance", (ev) => console.log("[tap] rebalance", ev));
+
+cons.connect();
+
+-------- [ Separator ] ------
+
+File Name: src/config.ts
+Size: 2.19 KB
+Code:
+// src/config.ts
+/**
+ * Central config for the WS gateway.
+ *
+ * Routing key (everywhere: Kafka + KeyDB + WS):
+ *   companyId|table|hashId
+ */
+import { config as configDotenv } from "dotenv";
+import os from "node:os";
+configDotenv();
+
+// ---- WebSocket ----
+export const PORT = Number(process.env.WS_PORT || 7000);
+export const PING_INTERVAL_MS = 25_000;
+export const MAX_QUEUE = 1000;
+
+// ---- Kafka (CDC + RPC) ----
+export const KAFKA_BROKERS = process.env.KAFKA_BROKERS || "localhost:9092";
+export const KAFKA_GROUP   = process.env.KAFKA_GROUP   || "cladbe-ws-gateway";
+
+/**
+ * Topics the gateway consumes for real-time CDC:
+ *  - server.page.diffs  (batched page mutations; binary FB payloads)
+ *  - server.row.events  (per-row change envelopes; JSON, optional)
+ */
+export const KAFKA_TOPICS = (process.env.KAFKA_TOPICS ||
+  "server.page.diffs,server.row.events").split(",").map(s => s.trim()).filter(Boolean);
+
+// ---- SQL-RPC topics ----
+export const SQL_RPC_REQUEST_TOPIC = process.env.SQL_RPC_REQUEST_TOPIC || "sql.rpc.requests";
+/** Unique reply topic per process so we can correlate responses safely. */
+export const SQL_RPC_REPLY_TOPIC =
+  process.env.SQL_RPC_REPLY_TOPIC ||
+  `sql.rpc.responses.ws.${os.hostname()}.${process.pid}.${Math.random().toString(36).slice(2)}`;
+export const SQL_RPC_GROUP_ID = `ws-gateway-rpc-${process.pid}`;
+
+// ---- CDC backpressure threshold ----
+export const SLOW_SOCKET_PAUSE_THRESHOLD = Number(process.env.SLOW_SOCKET_PAUSE_THRESHOLD || 100);
+
+// ---- KeyDB / HotCache ----
+export const KEYDB_HOST   = process.env.KEYDB_HOST;
+export const KEYDB_PORT   = process.env.KEYDB_PORT || 6379 as any;
+export const KEYDB_PASS   = process.env.KEYDB_PASSWORD;
+export const KEYDB_PREFIX = (process.env.KEYDB_PREFIX || "hcache:").replace(/\s+/g, "");
+
+/** Keep at most this many diffs per hashId in KeyDB (FIFO). */
+export const HOTCACHE_MAX_DIFFS   = Number(process.env.HOTCACHE_MAX_DIFFS || 5000);
+/** TTL (ms) for snapshots & diffs; 0 disables expiration. */
+export const HOTCACHE_RETENTION_MS = Number(process.env.HOTCACHE_RETENTION_MS || 10 * 60_000);
+
+// ---- Query control (publish/clear qmeta to Streams) ----
+export const QUERY_CONTROL_TOPIC = process.env.QUERY_CONTROL_TOPIC || "server.query.control";
+-------- [ Separator ] ------
+
+File Name: src/delivery.ts
+Size: 4.64 KB
+Code:
+// src/delivery.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { SubState } from "./lsn.js";
+import { MAX_QUEUE } from "./config.js";
+import { sessions } from "./state.js";
+import { safeSend } from "./ws/io.js";
+import { HotCache } from "./keydb.js";
+const hotCache = new HotCache();
+
+/**
+ * Global count of sessions currently marked as slow (backpressured).
+ *
+ * Why: Exposed to health and used by the CDC consumer flow-control loop to
+ * pause consumption when too many clients cannot keep up. This prevents the
+ * gateway process from buffering unbounded data and helps bound end-to-end lag.
+ */
+export let SLOW_SOCKETS = 0;
+export function markSlow() { SLOW_SOCKETS++; }
+export function markFast() { if (SLOW_SOCKETS > 0) SLOW_SOCKETS--; }
+/**
+ * Fan-out a binary CDC diff (FlatBuffer payload) to all subscribed sessions for a given query hashId.
+ *
+ * System role:
+ * - This function is called by the Kafka consumer whenever a new CDC event arrives.
+ * - It ensures that every WebSocket client with an active subscription to `hashId` gets the update,
+ *   but only if their subscription’s cursor LSN is behind the new event’s LSN.
+ * - It also persists the diff into the KeyDB HotCache so late subscribers or reconnecting clients
+ *   can replay missed diffs strictly after their LSN fence.
+ *
+ * Behavior details:
+ * - If a session is still waiting for its initial snapshot (`sub.buffering = true`), the diff is
+ *   temporarily buffered in memory until the snapshot completes.
+ * - If the socket is writable, the diff is sent as a raw binary frame (fast path).
+ * - If the socket is backpressured, the diff is queued as a base64 JSON frame (`diffB64`) and the
+ *   session is marked as "slow". Too many queued frames triggers a reset-to-snapshot error to avoid
+ *   unbounded memory growth.
+ * - The `sub.cursorLsn` is updated after successful delivery to track progress.
+ *
+ * Parameters:
+ * - hashId: unique identifier for the query (tenant_table|queryHash).
+ * - payload: raw Buffer containing the FlatBuffer CDC diff.
+ * - lsn: WAL position of this event (bigint, monotonically increasing).
+ * - onlySession: optional — if provided, restrict delivery to a single session (used when flushing
+ *   buffered diffs after a snapshot).
+ *
+ * Returns:
+ * - The number of sessions successfully delivered to.
+ *
+ * Related modules:
+ * - HotCache.addDiff → persists diffs keyed by LSN.
+ * - SubState in lsn.ts → tracks per-subscription cursor and buffering state.
+ * - KeyDB replay in ws/app.ts → uses these stored diffs to catch up new subscribers.
+ */
+export function deliverBinaryLSN(hashId: string, payload: Buffer, lsn: bigint, onlySession?: any) {
+  const targetSessions = onlySession ? [onlySession] : [...sessions.values()];
+  let delivered = 0;
+
+  // Fire-and-forget: store the diff in KeyDB for replay
+  // We prefer base64 as the neutral storage format.
+  const b64 = payload.toString("base64");
+  void hotCache.addDiff(hashId, lsn.toString(), b64).catch(() => { /* non-fatal */ });
+
+ for (const st of targetSessions) {
+  for (const subKey of st.subs) {
+    if (subKey !== hashId) continue; // exact match on routingKey
+    
+      const subStates: Map<string, SubState> = (st as any).subStates ?? new Map();
+    const sub = subStates.get(subKey);
+      if (!sub) continue;
+
+      // If snapshot still in-flight, buffer
+      if (sub.buffering) { sub.buffer.push({ lsn, payload }); continue; }
+      if (lsn <= sub.cursorLsn) continue;
+
+      // Send Buffer directly (uWS accepts Node Buffers)
+      const ok = st.socket.send(payload, true, false);
+      if (ok) {
+        sub.cursorLsn = lsn;
+        delivered++;
+      } else {
+        // Fall back to base64 frame, mark slow and apply local backpressure
+        st.sendQueue.push(JSON.stringify({ op: "diffB64", hashId, b64 }));
+        if (!(st as any)._slow) { (st as any)._slow = true; SLOW_SOCKETS++; }
+        if (st.sendQueue.length > MAX_QUEUE) {
+          st.sendQueue.length = 0;
+          st.socket.send(JSON.stringify({ op: "error", code: "overflow", message: "reset-to-snapshot" }));
+        }
+      }
+    }
+  }
+  return delivered;
+}
+
+
+/**
+ * Fan-out a JSON row-event envelope to all sessions subscribed to `routingKey` (== hashId).
+ * Uses the same backpressure path as other JSON frames via safeSend.
+ */
+export function deliverRowEvent(
+  routingKey: string,
+  ev: { hashId: string; lsn: string; kind: "added"|"modified"|"removed"; pk: string; pos?: number | null; from?: number | null; needFetch?: boolean; row?: any }
+) {
+  let delivered = 0;
+  for (const s of sessions.values()) {
+    if (!s.subs.has(routingKey)) continue;
+    safeSend(s.socket as any, { op: "rowEvent", ...ev } as any);
+    delivered++;
+  }
+  return delivered;
+}
+
+
+-------- [ Separator ] ------
+
+File Name: src/fb/builders.ts
+Size: 8.38 KB
+Code:
+// src/fb/builders.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import * as flatbuffers from "flatbuffers";
+import { SqlSchema as sc, SqlRpc as sr } from "@cladbe/sql-protocol";
+
+const SqlSchema = sc.SqlSchema;
+const SqlRpc = sr.SqlRpc;
+
+export function orderSortFromWire(s: string): sc.SqlSchema.OrderSort {
+  switch (s) {
+    case "ASC_DEFAULT": return SqlSchema.OrderSort.ASC_DEFAULT;
+    case "ASC_NULLS_FIRST": return SqlSchema.OrderSort.ASC_NULLS_FIRST;
+    case "ASC_NULLS_LAST": return SqlSchema.OrderSort.ASC_NULLS_LAST;
+    case "DESC_NULLS_FIRST": return SqlSchema.OrderSort.DESC_NULLS_FIRST;
+    case "DESC_NULLS_LAST": return SqlSchema.OrderSort.DESC_NULLS_LAST;
+    case "DESC_DEFAULT":
+    default: return SqlSchema.OrderSort.DESC_DEFAULT;
+  }
+}
+
+/** Build FilterValue union (returns type id + value offset) */
+export function buildFilterValue(
+  b: flatbuffers.Builder,
+  tagged: any
+): { type: sc.SqlSchema.FilterValue; off: number } {
+  const entry = (Object.entries(tagged ?? {})[0] as [string, any] | undefined);
+  const tag = entry?.[0];
+  const payload: any = entry?.[1] ?? {};
+
+  switch (tag) {
+    case "StringValue": {
+      const v = b.createString(String(payload?.value ?? ""));
+      const off = SqlSchema.StringValue.createStringValue(b, v);
+      return { type: SqlSchema.FilterValue.StringValue, off };
+    }
+    case "NumberValue": {
+      SqlSchema.NumberValue.startNumberValue(b);
+      SqlSchema.NumberValue.addValue(b, Number(payload?.value ?? 0));
+      return { type: SqlSchema.FilterValue.NumberValue, off: SqlSchema.NumberValue.endNumberValue(b) };
+    }
+    case "BoolValue": {
+      SqlSchema.BoolValue.startBoolValue(b);
+      SqlSchema.BoolValue.addValue(b, !!payload?.value);
+      return { type: SqlSchema.FilterValue.BoolValue, off: SqlSchema.BoolValue.endBoolValue(b) };
+    }
+    case "NullValue": {
+      return { type: SqlSchema.FilterValue.NullValue, off: SqlSchema.NullValue.endNullValue(b) };
+    }
+    case "Int64Value": {
+      // Expect JSON like { "Int64Value": { "value": "123" } } or number
+      const v = BigInt(String(payload?.value ?? "0"));
+      SqlSchema.Int64Value.startInt64Value(b);
+      SqlSchema.Int64Value.addValue(b, v);
+      return { type: SqlSchema.FilterValue.Int64Value, off: SqlSchema.Int64Value.endInt64Value(b) };
+    }
+    case "TimestampValue": {
+      // { "TimestampValue": { "epoch": "123", "unit": "MICROS" } }
+      const epoch = BigInt(String(payload?.epoch ?? "0"));
+      const unitStr = String(payload?.unit ?? "MICROS");
+      const unit = (SqlSchema.TimeUnit as any)[unitStr] ?? SqlSchema.TimeUnit.MICROS;
+      SqlSchema.TimestampValue.startTimestampValue(b);
+      SqlSchema.TimestampValue.addEpoch(b, epoch);
+      SqlSchema.TimestampValue.addUnit(b, unit);
+      return { type: SqlSchema.FilterValue.TimestampValue, off: SqlSchema.TimestampValue.endTimestampValue(b) };
+    }
+    case "StringList": {
+      const items = (payload?.values ?? []).map((s: any) => b.createString(String(s)));
+      const vec = SqlSchema.StringList.createValuesVector(b, items);
+      SqlSchema.StringList.startStringList(b);
+      SqlSchema.StringList.addValues(b, vec);
+      return { type: SqlSchema.FilterValue.StringList, off: SqlSchema.StringList.endStringList(b) };
+    }
+    case "Int64List": {
+      const items = (payload?.values ?? []).map((s: any) => BigInt(String(s)));
+        const vec = SqlSchema.Int64List.createValuesVector(b, items);
+      SqlSchema.Int64List.startInt64List(b);
+      SqlSchema.Int64List.addValues(b, vec);
+      return { type: SqlSchema.FilterValue.Int64List, off: SqlSchema.Int64List.endInt64List(b) };
+    }
+    case "Float64List": {
+      const items: number[] = (payload?.values ?? []).map((n: any) => Number(n));
+      const vec = SqlSchema.Float64List.createValuesVector(b, items);
+      SqlSchema.Float64List.startFloat64List(b);
+      SqlSchema.Float64List.addValues(b, vec);
+      return { type: SqlSchema.FilterValue.Float64List, off: SqlSchema.Float64List.endFloat64List(b) };
+    }
+    case "BoolList": {
+      const items: boolean[] = (payload?.values ?? []).map((v: any) => !!v);
+      const vec = SqlSchema.BoolList.createValuesVector(b, items);
+      SqlSchema.BoolList.startBoolList(b);
+      SqlSchema.BoolList.addValues(b, vec);
+      return { type: SqlSchema.FilterValue.BoolList, off: SqlSchema.BoolList.endBoolList(b) };
+    }
+    default: {
+      // default to NullValue
+      return { type: SqlSchema.FilterValue.NullValue, off: SqlSchema.NullValue.endNullValue(b) };
+    }
+  }
+}
+
+/** Build a Basic filter node */
+export function buildBasic(b: flatbuffers.Builder, node: any): number {
+  const fieldOff = b.createString(String(node?.field_name ?? ""));
+  const { type: valType, off: valOff } = buildFilterValue(b, node?.value);
+  const key = String(node?.filter_type ?? "equals") as keyof typeof SqlSchema.BasicSqlDataFilterType;
+  const ft = (SqlSchema.BasicSqlDataFilterType as any)[key] ?? SqlSchema.BasicSqlDataFilterType.equals;
+
+  SqlSchema.BasicSqlDataFilter.startBasicSqlDataFilter(b);
+  SqlSchema.BasicSqlDataFilter.addFieldName(b, fieldOff);
+  SqlSchema.BasicSqlDataFilter.addValueType(b, valType);
+  SqlSchema.BasicSqlDataFilter.addValue(b, valOff);
+  SqlSchema.BasicSqlDataFilter.addFilterType(b, ft);
+  return SqlSchema.BasicSqlDataFilter.endBasicSqlDataFilter(b);
+}
+
+/** Build a Wrapper node (and its nested union vectors) */
+export function buildWrapper(b: flatbuffers.Builder, wrapper: any): number {
+  if (!wrapper) return 0;
+  const typeStr = String(wrapper?.filter_wrapper_type ?? "and");
+  const fwt = typeStr === "or" ? SqlSchema.SQLFilterWrapperType.or : SqlSchema.SQLFilterWrapperType.and;
+
+  const filters = Array.isArray(wrapper?.filters) ? wrapper.filters : [];
+  const typeArr: number[] = [];
+  const valArr: number[] = [];
+
+  for (const child of filters) {
+    if (child?.filter_wrapper_type) {
+      const nestedOff = buildWrapper(b, child);
+      typeArr.push(SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilterWrapper);
+      valArr.push(nestedOff);
+    } else {
+      const basicOff = buildBasic(b, child);
+      typeArr.push(SqlSchema.BasicSqlDataFilterUnion.BasicSqlDataFilter);
+      valArr.push(basicOff);
+    }
+  }
+
+  const typesVec = SqlSchema.BasicSqlDataFilterWrapper.createFiltersTypeVector(b, typeArr);
+  const valsVec  = SqlSchema.BasicSqlDataFilterWrapper.createFiltersVector(b, valArr);
+
+  SqlSchema.BasicSqlDataFilterWrapper.startBasicSqlDataFilterWrapper(b);
+  SqlSchema.BasicSqlDataFilterWrapper.addFilterWrapperType(b, fwt);
+  SqlSchema.BasicSqlDataFilterWrapper.addFiltersType(b, typesVec);
+  SqlSchema.BasicSqlDataFilterWrapper.addFilters(b, valsVec);
+  return SqlSchema.BasicSqlDataFilterWrapper.endBasicSqlDataFilterWrapper(b);
+}
+
+export function buildOrderVec(b: flatbuffers.Builder, orderArr: any[]): number {
+  if (!Array.isArray(orderArr) || !orderArr.length) return 0;
+  const items = orderArr.map(o => {
+    const fOff = b.createString(String(o.field));
+    SqlSchema.OrderKeySpec.startOrderKeySpec(b);
+    SqlSchema.OrderKeySpec.addField(b, fOff);
+    SqlSchema.OrderKeySpec.addSort(b, orderSortFromWire(String(o.sort ?? "DESC_DEFAULT")));
+    if (o.is_pk != null) SqlSchema.OrderKeySpec.addIsPk(b, !!o.is_pk);
+    return SqlSchema.OrderKeySpec.endOrderKeySpec(b);
+  });
+  return SqlRpc.GetDataReq.createOrderVector(b, items);
+}
+
+export function buildCursorVec(b: flatbuffers.Builder, cursorArr: any[]): number {
+  if (!Array.isArray(cursorArr) || !cursorArr.length) return 0;
+  const items = cursorArr.map(c => {
+    const fieldOff = b.createString(String(c.field));
+    const { type: valType, off: valOff } = buildFilterValue(b, c.value);
+    SqlSchema.CursorEntry.startCursorEntry(b);
+    SqlSchema.CursorEntry.addField(b, fieldOff);
+    SqlSchema.CursorEntry.addValueType(b, valType);
+    SqlSchema.CursorEntry.addValue(b, valOff);
+    return SqlSchema.CursorEntry.endCursorEntry(b);
+  });
+  return SqlRpc.GetDataReq.createCursorVector(b, items);
+}
+
+/**
+ * Given the same JSON your client sends (wrapper/order/cursor/limit), return the
+ * exact vector/offsets to set on SqlRpc.GetDataReq.
+ */
+export function buildQueryPartsFromJson(
+  b: flatbuffers.Builder,
+  spec: any
+): { wrapperOff: number; orderVec: number; cursorVec: number; limit: number } {
+  const wrapperOff = buildWrapper(b, spec?.wrapper);
+  const orderVec   = buildOrderVec(b, spec?.order ?? []);
+  const cursorVec  = buildCursorVec(b, spec?.cursor ?? []);
+  const limit      = Number.isFinite(Number(spec?.limit)) ? Number(spec.limit) : NaN;
+  return { wrapperOff, orderVec, cursorVec, limit };
+}
+-------- [ Separator ] ------
+
+File Name: src/fb/json-spec.ts
+Size: 18.62 KB
+Code:
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import * as flatbuffers from "flatbuffers";
+import { SqlSchema as sc, SqlRpc as sr } from "@cladbe/sql-protocol";
+
+const S = sc.SqlSchema;
+const R = sr.SqlRpc;
+
+/** ----------------- enum mappers (string → schema enum) ----------------- */
+
+const WRAPPER_KIND: Record<string, sc.SqlSchema.SQLFilterWrapperType> = {
+    or: S.SQLFilterWrapperType.or,
+    and: S.SQLFilterWrapperType.and,
+};
+
+const NULLS_ORDER: Record<string, sc.SqlSchema.NullsSortOrder> = {
+    first: S.NullsSortOrder.first,
+    last: S.NullsSortOrder.last,
+    default: S.NullsSortOrder.default_,
+    default_: S.NullsSortOrder.default_, // tolerate either
+};
+
+const ORDER_SORT: Record<string, sc.SqlSchema.OrderSort> = {
+    ASC_DEFAULT: S.OrderSort.ASC_DEFAULT,
+    ASC_NULLS_FIRST: S.OrderSort.ASC_NULLS_FIRST,
+    ASC_NULLS_LAST: S.OrderSort.ASC_NULLS_LAST,
+    DESC_DEFAULT: S.OrderSort.DESC_DEFAULT,
+    DESC_NULLS_FIRST: S.OrderSort.DESC_NULLS_FIRST,
+    DESC_NULLS_LAST: S.OrderSort.DESC_NULLS_LAST,
+};
+
+const FILTER_OP: Record<string, sc.SqlSchema.BasicSqlDataFilterType> = {
+    equals: S.BasicSqlDataFilterType.equals,
+    notEquals: S.BasicSqlDataFilterType.notEquals,
+    lessThan: S.BasicSqlDataFilterType.lessThan,
+    lessThanOrEquals: S.BasicSqlDataFilterType.lessThanOrEquals,
+    greaterThan: S.BasicSqlDataFilterType.greaterThan,
+    greaterThanOrEquals: S.BasicSqlDataFilterType.greaterThanOrEquals,
+    isNull: S.BasicSqlDataFilterType.isNull,
+    isNotNull: S.BasicSqlDataFilterType.isNotNull,
+    regex: S.BasicSqlDataFilterType.regex,
+    notRegex: S.BasicSqlDataFilterType.notRegex,
+    startsWith: S.BasicSqlDataFilterType.startsWith,
+    endsWith: S.BasicSqlDataFilterType.endsWith,
+    contains: S.BasicSqlDataFilterType.contains,
+    notContains: S.BasicSqlDataFilterType.notContains,
+    arrayContains: S.BasicSqlDataFilterType.arrayContains,
+    arrayContainedBy: S.BasicSqlDataFilterType.arrayContainedBy,
+    arrayOverlaps: S.BasicSqlDataFilterType.arrayOverlaps,
+    arrayEquals: S.BasicSqlDataFilterType.arrayEquals,
+    arrayNotEquals: S.BasicSqlDataFilterType.arrayNotEquals,
+    arrayEmpty: S.BasicSqlDataFilterType.arrayEmpty,
+    arrayNotEmpty: S.BasicSqlDataFilterType.arrayNotEmpty,
+    arrayLength: S.BasicSqlDataFilterType.arrayLength,
+    jsonContains: S.BasicSqlDataFilterType.jsonContains,
+    jsonContainedBy: S.BasicSqlDataFilterType.jsonContainedBy,
+    jsonHasKey: S.BasicSqlDataFilterType.jsonHasKey,
+    jsonHasAnyKey: S.BasicSqlDataFilterType.jsonHasAnyKey,
+    jsonHasAllKeys: S.BasicSqlDataFilterType.jsonHasAllKeys,
+    jsonGetField: S.BasicSqlDataFilterType.jsonGetField,
+    jsonGetFieldAsText: S.BasicSqlDataFilterType.jsonGetFieldAsText,
+    between: S.BasicSqlDataFilterType.between,
+    notBetween: S.BasicSqlDataFilterType.notBetween,
+    rangeContains: S.BasicSqlDataFilterType.rangeContains,
+    rangeContainedBy: S.BasicSqlDataFilterType.rangeContainedBy,
+    inList: S.BasicSqlDataFilterType.inList,
+    notInList: S.BasicSqlDataFilterType.notInList,
+};
+
+/** ----------------- FilterValue union builders ----------------- */
+
+type Tagged = Record<string, any>;
+
+function buildFilterValue(
+    b: flatbuffers.Builder,
+    tagged: Tagged | null | undefined
+): { type: sc.SqlSchema.FilterValue; off: number } {
+    const [tag, payload] = Object.entries(tagged ?? {})[0] ?? [undefined, undefined];
+
+    switch (tag) {
+        case "StringValue": {
+            const v = b.createString(String(payload?.value ?? ""));
+            const off = S.StringValue.createStringValue(b, v);
+            return { type: S.FilterValue.StringValue, off };
+        }
+        case "NumberValue": {
+            S.NumberValue.startNumberValue(b);
+            S.NumberValue.addValue(b, Number(payload?.value ?? 0));
+            return { type: S.FilterValue.NumberValue, off: S.NumberValue.endNumberValue(b) };
+        }
+        case "BoolValue": {
+            S.BoolValue.startBoolValue(b);
+            S.BoolValue.addValue(b, !!payload?.value);
+            return { type: S.FilterValue.BoolValue, off: S.BoolValue.endBoolValue(b) };
+        }
+        case "NullValue": {
+            return { type: S.FilterValue.NullValue, off: S.NullValue.endNullValue(b) };
+        }
+        case "Int64Value": {
+            // Accept number or string; coerce through BigInt safely
+            const v = BigInt(String(payload?.value ?? "0"));
+            S.Int64Value.startInt64Value(b);
+            S.Int64Value.addValue(b, v);
+            return { type: S.FilterValue.Int64Value, off: S.Int64Value.endInt64Value(b) };
+        }
+        case "TimestampValue": {
+            const epoch = BigInt(String(payload?.epoch ?? "0"));
+            const unitStr = String(payload?.unit ?? "MICROS");
+            const unit = (S.TimeUnit as any)[unitStr] ?? S.TimeUnit.MICROS;
+            S.TimestampValue.startTimestampValue(b);
+            S.TimestampValue.addEpoch(b, epoch);
+            S.TimestampValue.addUnit(b, unit);
+            return { type: S.FilterValue.TimestampValue, off: S.TimestampValue.endTimestampValue(b) };
+        }
+        case "StringList": {
+            const vals = (payload?.values ?? []).map((s: any) => b.createString(String(s)));
+            const vec = S.StringList.createValuesVector(b, vals);
+            S.StringList.startStringList(b);
+            S.StringList.addValues(b, vec);
+            return { type: S.FilterValue.StringList, off: S.StringList.endStringList(b) };
+        }
+        case "Int64List": {
+            const vals = (payload?.values ?? []).map((s: any) => BigInt(String(s)));
+            const vec = S.Int64List.createValuesVector(b, vals);
+            S.Int64List.startInt64List(b);
+            S.Int64List.addValues(b, vec);
+            return { type: S.FilterValue.Int64List, off: S.Int64List.endInt64List(b) };
+        }
+        case "Float64List": {
+            const vals = (payload?.values ?? []).map((n: any) => Number(n));
+            const vec = S.Float64List.createValuesVector(b, vals);
+            S.Float64List.startFloat64List(b);
+            S.Float64List.addValues(b, vec);
+            return { type: S.FilterValue.Float64List, off: S.Float64List.endFloat64List(b) };
+        }
+        case "BoolList": {
+            const vals = (payload?.values ?? []).map((v: any) => !!v);
+            const vec = S.BoolList.createValuesVector(b, vals);
+            S.BoolList.startBoolList(b);
+            S.BoolList.addValues(b, vec);
+            return { type: S.FilterValue.BoolList, off: S.BoolList.endBoolList(b) };
+        }
+
+        // RangeValue support (if client sends it)
+        case "RangeValue": {
+            // { low: FilterValue, high: FilterValue, include_low, include_high }
+            const { type: loT, off: loOff } = buildFilterValue(b, payload?.low);
+            const { type: hiT, off: hiOff } = buildFilterValue(b, payload?.high);
+
+            // FlatBuffers unions in a table would need fields typed; your schema defines RangeValue with unions.
+            // We encode it only when used inside a BasicSqlDataFilter value for ops like between/rangeContains.
+            // Caller will place it accordingly; returning Null here forces caller to embed RangeValue directly.
+            // To keep API uniform, we *do* return a NullValue here and let buildBasic() handle RangeValue path.
+            return { type: S.FilterValue.NullValue, off: S.NullValue.endNullValue(b) };
+        }
+
+        default: {
+            // Default to NullValue (robustness)
+            return { type: S.FilterValue.NullValue, off: S.NullValue.endNullValue(b) };
+        }
+    }
+}
+
+/** Build SqlFilterModifier from optional JSON { distinct, case_insensitive, nulls_order } */
+function buildModifier(b: flatbuffers.Builder, mod: any | undefined): number {
+    if (!mod || typeof mod !== "object") {
+        return 0; // not setting = default
+    }
+    const nulls = NULLS_ORDER[String(mod.nulls_order ?? "default")] ?? S.NullsSortOrder.default_;
+
+    S.SqlFilterModifier.startSqlFilterModifier(b);
+    if (mod.distinct != null) S.SqlFilterModifier.addDistinct(b, !!mod.distinct);
+    if (mod.case_insensitive != null) S.SqlFilterModifier.addCaseInsensitive(b, !!mod.case_insensitive);
+    S.SqlFilterModifier.addNullsOrder(b, nulls);
+    return S.SqlFilterModifier.endSqlFilterModifier(b);
+}
+
+/** ----------------- Filters (Basic, Wrapper) ----------------- */
+
+function buildBasic(
+    b: flatbuffers.Builder,
+    node: any
+): number {
+    const fieldOff = b.createString(String(node?.field_name ?? ""));
+    const op = FILTER_OP[String(node?.filter_type ?? "equals")] ?? S.BasicSqlDataFilterType.equals;
+
+    // Standard value path (unions)
+    const { type: valType, off: valOff } = buildFilterValue(b, node?.value);
+
+    const modOff = buildModifier(b, node?.modifier);
+
+    S.BasicSqlDataFilter.startBasicSqlDataFilter(b);
+    S.BasicSqlDataFilter.addFieldName(b, fieldOff);
+    S.BasicSqlDataFilter.addValueType(b, valType);
+    S.BasicSqlDataFilter.addValue(b, valOff);
+    S.BasicSqlDataFilter.addFilterType(b, op);
+    if (modOff) S.BasicSqlDataFilter.addModifier(b, modOff);
+    return S.BasicSqlDataFilter.endBasicSqlDataFilter(b);
+}
+
+function buildWrapper(
+    b: flatbuffers.Builder,
+    wrapper: any
+): number {
+    const kind = WRAPPER_KIND[String(wrapper?.filter_wrapper_type ?? "and")] ?? S.SQLFilterWrapperType.and;
+    const filters = Array.isArray(wrapper?.filters) ? wrapper.filters : [];
+
+    // Build child union vectors
+    const types: number[] = [];
+    const vals: number[] = [];
+
+    for (const f of filters) {
+        if (f?.filter_wrapper_type != null) {
+            // nested wrapper
+            const woff = buildWrapper(b, f);
+            types.push(S.BasicSqlDataFilterUnion.BasicSqlDataFilterWrapper);
+            vals.push(woff);
+        } else {
+            // basic
+            const boff = buildBasic(b, f);
+            types.push(S.BasicSqlDataFilterUnion.BasicSqlDataFilter);
+            vals.push(boff);
+        }
+    }
+
+    const tv = S.BasicSqlDataFilterWrapper.createFiltersTypeVector(b, types);
+    const vv = S.BasicSqlDataFilterWrapper.createFiltersVector(b, vals);
+
+    S.BasicSqlDataFilterWrapper.startBasicSqlDataFilterWrapper(b);
+    S.BasicSqlDataFilterWrapper.addFilterWrapperType(b, kind);
+    S.BasicSqlDataFilterWrapper.addFiltersType(b, tv);
+    S.BasicSqlDataFilterWrapper.addFilters(b, vv);
+    return S.BasicSqlDataFilterWrapper.endBasicSqlDataFilterWrapper(b);
+}
+
+/** ----------------- Order / Cursor builders ----------------- */
+
+function buildOrderVec(b: flatbuffers.Builder, orderArr: any[]): number {
+    if (!Array.isArray(orderArr) || !orderArr.length) return 0;
+    const items = orderArr.map((o) => {
+        const f = b.createString(String(o?.field ?? ""));
+        const sort = ORDER_SORT[String(o?.sort ?? "DESC_DEFAULT")] ?? S.OrderSort.DESC_DEFAULT;
+        S.OrderKeySpec.startOrderKeySpec(b);
+        S.OrderKeySpec.addField(b, f);
+        S.OrderKeySpec.addSort(b, sort);
+        if (o?.is_pk != null) S.OrderKeySpec.addIsPk(b, !!o.is_pk);
+        return S.OrderKeySpec.endOrderKeySpec(b);
+    });
+    return S.StreamingSqlDataFilter.createOrderVector(b, items);
+}
+
+function buildCursorVec(b: flatbuffers.Builder, cursorArr: any[]): number {
+    if (!Array.isArray(cursorArr) || !cursorArr.length) return 0;
+    const items = cursorArr.map((c) => {
+        const f = b.createString(String(c?.field ?? ""));
+        const { type: vt, off: vo } = buildFilterValue(b, c?.value);
+        S.CursorEntry.startCursorEntry(b);
+        S.CursorEntry.addField(b, f);
+        S.CursorEntry.addValueType(b, vt);
+        S.CursorEntry.addValue(b, vo);
+        return S.CursorEntry.endCursorEntry(b);
+    });
+    return S.StreamingSqlDataFilter.createCursorVector(b, items);
+}
+
+/** ----------------- Public: STREAMING spec (FB root) ----------------- */
+/**
+ * Accepts the client JSON (from your Dart `StreamingSqlDataFilter.toMap()`) and
+ * returns a Buffer with a FlatBuffer `SqlSchema.StreamingSqlDataFilter` root.
+ */
+export function encodeStreamingFilterJson(jsonSpec: any): Buffer {
+    const b = new flatbuffers.Builder(1024);
+
+    const hashOff = b.createString(String(jsonSpec?.hash ?? ""));
+
+    const wrapperOff = buildWrapper(b, jsonSpec?.wrapper ?? { filter_wrapper_type: "and", filters: [] });
+    const orderVec = buildOrderVec(b, jsonSpec?.order ?? []);
+    const cursorVec = buildCursorVec(b, jsonSpec?.cursor ?? []);
+    const limit = Number.isFinite(Number(jsonSpec?.limit)) ? Number(jsonSpec.limit) : 50;
+    const schemaVer = Number.isFinite(Number(jsonSpec?.schema_version)) ? Number(jsonSpec.schema_version) : 1;
+
+    S.StreamingSqlDataFilter.startStreamingSqlDataFilter(b);
+    S.StreamingSqlDataFilter.addHash(b, hashOff);
+    S.StreamingSqlDataFilter.addWrapper(b, wrapperOff);
+    if (orderVec) S.StreamingSqlDataFilter.addOrder(b, orderVec);
+    if (cursorVec) S.StreamingSqlDataFilter.addCursor(b, cursorVec);
+    if (limit) S.StreamingSqlDataFilter.addLimit(b, limit >>> 0);
+    S.StreamingSqlDataFilter.addSchemaVersion(b, schemaVer >>> 0);
+    const root = S.StreamingSqlDataFilter.endStreamingSqlDataFilter(b);
+
+    b.finish(root);
+    return Buffer.from(b.asUint8Array());
+}
+
+/** ----------------- Public: RPC SqlQuerySpec (no root) ----------------- */
+/**
+ * Build `SqlSchema.SqlQuerySpec` (for RPC) from the same JSON shape:
+ * { wrapper, limit, order, cursor, strict_after? }
+ * Returns the offset & table type so callers can place it into `GetDataReq`
+ * or another RPC envelope as needed.
+ */
+export function buildSqlQuerySpecFromJson(
+    b: flatbuffers.Builder,
+    jsonSpec: any
+): number {
+    const wrapperOff = buildWrapper(b, jsonSpec?.wrapper ?? { filter_wrapper_type: "and", filters: [] });
+
+    // order/cursor use the same helpers but we must rebuild vectors for SqlQuerySpec
+    const orderOffsets: number[] = [];
+    for (const o of (jsonSpec?.order ?? [])) {
+        const f = b.createString(String(o?.field ?? ""));
+        const sort = ORDER_SORT[String(o?.sort ?? "DESC_DEFAULT")] ?? S.OrderSort.DESC_DEFAULT;
+        S.OrderKeySpec.startOrderKeySpec(b);
+        S.OrderKeySpec.addField(b, f);
+        S.OrderKeySpec.addSort(b, sort);
+        if (o?.is_pk != null) S.OrderKeySpec.addIsPk(b, !!o.is_pk);
+        orderOffsets.push(S.OrderKeySpec.endOrderKeySpec(b));
+    }
+    const orderVec = sc.SqlSchema.SqlQuerySpec.createOrderVector(b, orderOffsets as unknown as number[]);
+
+    const cursorOffsets: number[] = [];
+    for (const c of (jsonSpec?.cursor ?? [])) {
+        const f = b.createString(String(c?.field ?? ""));
+        const { type: vt, off: vo } = buildFilterValue(b, c?.value);
+        S.CursorEntry.startCursorEntry(b);
+        S.CursorEntry.addField(b, f);
+        S.CursorEntry.addValueType(b, vt);
+        S.CursorEntry.addValue(b, vo);
+        cursorOffsets.push(S.CursorEntry.endCursorEntry(b));
+    }
+    const cursorVec = sc.SqlSchema.SqlQuerySpec.createCursorVector(b, cursorOffsets as unknown as number[]);
+
+    const limit = Number.isFinite(Number(jsonSpec?.limit)) ? Number(jsonSpec.limit) : 50;
+    const strictAfter = jsonSpec?.strict_after != null ? !!jsonSpec.strict_after : true;
+
+    sc.SqlSchema.SqlQuerySpec.startSqlQuerySpec(b);
+    sc.SqlSchema.SqlQuerySpec.addWrapper(b, wrapperOff);
+    if (orderOffsets.length) sc.SqlSchema.SqlQuerySpec.addOrder(b, orderVec);
+    if (cursorOffsets.length) sc.SqlSchema.SqlQuerySpec.addCursor(b, cursorVec);
+    if (limit) sc.SqlSchema.SqlQuerySpec.addLimit(b, limit >>> 0);
+    sc.SqlSchema.SqlQuerySpec.addStrictAfter(b, strictAfter);
+    return sc.SqlSchema.SqlQuerySpec.endSqlQuerySpec(b);
+}
+
+/** ----------------- Convenience: accept either FB or JSON for RPC ----------------- */
+/**
+ * Given either:
+ *  - `queryFbB64`: a base64-encoded StreamingSqlDataFilter (or compatible), OR
+ *  - `queryJson`:  a JSON string (Dart `toJson()` of StreamingSqlDataFilter),
+ *
+ * Build a `GetDataReq` payload ready to put into an SqlRpc envelope.
+ */
+export function buildGetDataReqFromEither(
+    b: flatbuffers.Builder,
+    companyId: string,
+    tableName: string,
+    opts: { queryFbB64?: string; queryJson?: string }
+): { type: sr.SqlRpc.RpcPayload; off: number } {
+    const companyOff = b.createString(companyId);
+    const tableOff = b.createString(tableName);
+
+    // If the caller gave JSON, translate to SqlQuerySpec and embed.
+    // If they gave a FB b64, we *don’t* parse it here; Streams uses it.
+    // For RPC, we rebuild a SqlQuerySpec to drive the worker.
+    let wrapperOff = 0, orderVec = 0, cursorVec = 0, limit = 0;
+
+    if (opts.queryJson) {
+        let spec: any = {};
+        try { spec = JSON.parse(opts.queryJson); } catch { }
+        const qsOff = buildSqlQuerySpecFromJson(b, spec);
+
+        R.GetDataReq.startGetDataReq(b);
+        R.GetDataReq.addCompanyId(b, companyOff);
+        R.GetDataReq.addTableName(b, tableOff);
+        // Inline the SqlQuerySpec pieces into GetDataReq (keeps worker backward-compat)
+        // We’ll map fields individually because GetDataReq is the public RPC input.
+        // Rebuild inline again to be explicit:
+        const w2 = buildWrapper(b, spec?.wrapper ?? { filter_wrapper_type: "and", filters: [] });
+        const ord2 = (spec?.order ?? []).map((o: any) => {
+            const f = b.createString(String(o?.field ?? ""));
+            const sort = ORDER_SORT[String(o?.sort ?? "DESC_DEFAULT")] ?? S.OrderSort.DESC_DEFAULT;
+            S.OrderKeySpec.startOrderKeySpec(b);
+            S.OrderKeySpec.addField(b, f);
+            S.OrderKeySpec.addSort(b, sort);
+            if (o?.is_pk != null) S.OrderKeySpec.addIsPk(b, !!o.is_pk);
+            return S.OrderKeySpec.endOrderKeySpec(b);
+        });
+        orderVec = R.GetDataReq.createOrderVector(b, ord2);
+
+        const cur2 = (spec?.cursor ?? []).map((c: any) => {
+            const f = b.createString(String(c?.field ?? ""));
+            const { type: vt, off: vo } = buildFilterValue(b, c?.value);
+            S.CursorEntry.startCursorEntry(b);
+            S.CursorEntry.addField(b, f);
+            S.CursorEntry.addValueType(b, vt);
+            S.CursorEntry.addValue(b, vo);
+            return S.CursorEntry.endCursorEntry(b);
+        });
+        cursorVec = R.GetDataReq.createCursorVector(b, cur2);
+
+        if (Number.isFinite(Number(spec?.limit))) limit = Number(spec.limit) >>> 0;
+
+        R.GetDataReq.addWrapper(b, w2);
+        if (orderVec) R.GetDataReq.addOrder(b, orderVec);
+        if (cursorVec) R.GetDataReq.addCursor(b, cursorVec);
+        if (limit) R.GetDataReq.addLimit(b, limit);
+        R.GetDataReq.addStrictAfter(b, spec?.strict_after != null ? !!spec.strict_after : true);
+        const off = R.GetDataReq.endGetDataReq(b);
+        return { type: R.RpcPayload.GetDataReq, off };
+    }
+
+    // No JSON? build a minimal GET_DATA (limit-only) from FB path.
+    R.GetDataReq.startGetDataReq(b);
+    R.GetDataReq.addCompanyId(b, companyOff);
+    R.GetDataReq.addTableName(b, tableOff);
+    R.GetDataReq.addStrictAfter(b, true);
+    const off = R.GetDataReq.endGetDataReq(b);
+    return { type: R.RpcPayload.GetDataReq, off };
+}
+-------- [ Separator ] ------
+
+File Name: src/kafka.ts
+Size: 3.85 KB
+Code:
+// src/kafka.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import pkg from 'node-rdkafka';
+const { KafkaConsumer } = pkg;
+import type { LibrdKafkaError, Message } from 'node-rdkafka';
+
+/**
+ * Callbacks used by the CDC Kafka consumer to integrate with the gateway.
+ *
+ * Why: Decouples wire-level consumption from business logic (fan-out, metrics, etc.).
+ * How it fits: `onMessage` hands off raw change events to delivery, while error/rebalance
+ * hooks surface operational signals to logs and control flow (pause/resume).
+ */
+export type KafkaHandlers = {
+    onMessage: (key: string, value: Buffer, raw: Message) => void;
+    onError?: (err: LibrdKafkaError) => void;
+    onRebalance?: (ev: any) => void;
+};
+
+/**
+ * GatewayConsumer
+ *
+ * Thin wrapper around node-rdkafka to consume CDC topics with sensible throughput
+ * defaults. Exposes `pauseAll`/`resumeAll` to implement coarse backpressure: the
+ * gateway pauses reading from Kafka when too many sockets are slow to avoid
+ * unbounded buffering and heap growth.
+ */
+export class GatewayConsumer {
+    private consumer: pkg.KafkaConsumer; // KafkaConsumer type
+    private paused = false;
+
+    constructor(
+        private topics: string[],
+        private groupId: string,
+        private brokers: string,
+        private handlers: KafkaHandlers,
+    ) {
+        this.consumer = new KafkaConsumer(
+            {
+                'metadata.broker.list': brokers,
+                'group.id': groupId,
+                'enable.auto.commit': true,
+                'socket.keepalive.enable': true,
+                // throughput tuning
+                'fetch.wait.max.ms': 50,
+                'fetch.min.bytes': 65536,              // 64 KiB
+                'queued.max.messages.kbytes': 102400,  // 100 MiB
+                'allow.auto.create.topics': true,
+                'client.id': 'cladbe-ws-gateway',
+            },
+            { 'auto.offset.reset': 'latest' }
+        );
+    }
+
+    /** Connects, subscribes to topics, and begins message consumption. */
+    start() {
+        this.consumer
+            .on('ready', () => {
+                console.log('[cdc] consumer ready', { groupId: this.groupId, topics: this.topics, brokers: this.brokers });
+                this.consumer.subscribe(this.topics);
+                this.consumer.consume();
+            })
+            .on('data', (m: Message) => {
+                const key = m.key
+                    ? (Buffer.isBuffer(m.key) ? m.key.toString('utf8') : String(m.key))
+                    : '';
+                if (!key || !m.value) return;
+
+                // Toggle this for very noisy per-message logs:
+                console.log('[cdc] message', { topic: m.topic, partition: m.partition, offset: m.offset, key, bytes: (m.value as Buffer).byteLength });
+
+                this.handlers.onMessage(key, m.value as Buffer, m);
+            })
+            .on('event.error', (err: LibrdKafkaError) => {
+                console.error('[cdc] consumer error', err);
+                this.handlers.onError?.(err);
+            })
+            .on('rebalance', (ev: any) => {
+                console.log('[cdc] rebalance', ev);
+                this.handlers.onRebalance?.(ev);
+            });
+
+        this.consumer.connect();
+    }
+
+    /** Pauses all current assignments; used when slow sockets exceed threshold. */
+    pauseAll() {
+        if (this.paused) return;
+        const asg = this.consumer.assignments();
+        if (asg.length) {
+            this.consumer.pause(asg);
+            this.paused = true;
+        }
+    }
+
+    /** Resumes all current assignments once pressure subsides. */
+    resumeAll() {
+        if (!this.paused) return;
+        const asg = this.consumer.assignments();
+        if (asg.length) {
+            this.consumer.resume(asg);
+            this.paused = false;
+        }
+    }
+
+    /** Gracefully disconnects the consumer. */
+    stop() {
+        try { this.consumer.disconnect(); } catch {}
+    }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/keydb.ts
+Size: 6.83 KB
+Code:
+// src/keydb.ts
+/* Redis/KeyDB-backed HotCache with the same API used by the gateway.
+   Data layout (per hashId):
+     snap:{hashId} → JSON string of { rows, cursor:{lsn}, ts }  (SET PX ttl)
+     diff:{hashId} → Redis LIST of JSON strings { lsn, b64 }    (RPUSH, LTRIM, EXPIRE)
+*/
+
+import IORedis, { Redis } from "ioredis";
+import {
+    KEYDB_PREFIX,
+    HOTCACHE_MAX_DIFFS,
+    HOTCACHE_RETENTION_MS,
+    KEYDB_HOST,
+    KEYDB_PORT,
+    KEYDB_PASS,
+} from "./config.js";
+
+type LsnString = string;
+
+/**
+ * SnapshotPayload
+ *
+ * Why: Encodes a point-in-time view for a given query hashId returned to a subscriber.
+ * How it fits: Stored under `snap:{hashId}` in KeyDB for quick warm snapshots, paired
+ * with diffs to replay strict-after fence LSN. `cursor.lsn` tracks the WAL position.
+ */
+export type SnapshotPayload = {
+    rows: any[];
+    cursor: { lsn: LsnString };
+    ts: number; // epoch millis
+};
+
+type Diff = { lsn: LsnString; b64: string };
+
+/**
+ * HotCache options
+ *
+ * - maxDiffsPerKey: cap diff history to bound memory; newest retained.
+ * - retentionMs: TTL for snapshots/diffs to self-clean stale keys.
+ * - url/prefix/redis: override connection and namespacing.
+ */
+export type HotCacheOpts = {
+    /** cap per-hash diff list length (default from env). */
+    maxDiffsPerKey?: number;
+    /** expire snapshots & diffs after this many ms (0/undefined to disable). */
+    retentionMs?: number;
+    /** override redis connection or url/prefix if needed */
+    url?: string;
+    prefix?: string;
+    redis?: Redis;
+};
+
+/**
+ * HotCache
+ *
+ * Role: Small Redis/KeyDB-backed cache that keeps a recent snapshot and a tail of diffs
+ * per query hashId. This enables fast subscribe-time snapshots and deterministic catch-up:
+ * replay of diffs strictly after the subscribe fence LSN.
+ *
+ * External systems: Uses KeyDB/Redis for durability across process restarts and to serve
+ * multiple gateway instances consistently.
+ */
+export class HotCache {
+    private redis: Redis;
+    private prefix: string;
+    private maxDiffsPerKey: number;
+    private retentionMs: number | null;
+
+    /** Create a new HotCache instance; by default uses env-provided URL/prefix. */
+    constructor(opts: HotCacheOpts = {}) {
+        this.redis = opts.redis ?? new Redis({
+            host: KEYDB_HOST,
+            port: Number(KEYDB_PORT),
+            password: KEYDB_PASS
+        });
+        this.prefix = (opts.prefix ?? KEYDB_PREFIX).replace(/\s+/g, "");
+        this.maxDiffsPerKey = opts.maxDiffsPerKey ?? HOTCACHE_MAX_DIFFS;
+        const r = opts.retentionMs ?? HOTCACHE_RETENTION_MS;
+        this.retentionMs = r && r > 0 ? r : null;
+    }
+
+
+    /**
+ * Fetch the ordered PK list for a page: LRANGE hcache:range:{hashId} 0 -1
+ * Returns [] if key is missing/expired.
+ */
+    async range(hashId: string): Promise<string[]> {
+        try {
+            const key = `${this.prefix}range:${hashId}`;
+            // node-redis v4
+            // const pks = await this.redis.lRange(key, 0, -1);
+
+            // ioredis
+            const pks = await (this as any).redis.lrange(key, 0, -1);
+            return Array.isArray(pks) ? pks.map(String) : [];
+        } catch {
+            return [];
+        }
+    }
+
+    // ---------- Public API (unchanged shape) ----------
+
+    /**
+     * Fetch a cached snapshot for `hashId` if present.
+     * Assumptions: Snapshots are reasonably fresh; callers may enforce freshness by
+     * comparing `cursor.lsn` or timestamp vs. subscribe fence.
+     */
+    async getSnapshot(hashId: string): Promise<SnapshotPayload | null> {
+        const s = await this.redis.get(this.kSnap(hashId));
+        if (!s) return null;
+        try {
+            const parsed = JSON.parse(s);
+            // shape guard
+            if (!parsed || typeof parsed !== "object") return null;
+            return parsed as SnapshotPayload;
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Persist a snapshot and align the diff list to start strictly after `snap.cursor.lsn`.
+     * Why: Prevents re-sending diffs that are already reflected in the snapshot.
+     */
+    async setSnapshot(hashId: string, snap: SnapshotPayload): Promise<void> {
+        const snapKey = this.kSnap(hashId);
+        const diffKey = this.kDiff(hashId);
+        const px = this.retentionMs ?? undefined;
+
+        const pipe = this.redis.pipeline();
+
+        // use psetex when TTL is present; set otherwise (avoids the TS overload issue)
+        if (px) {
+            pipe.psetex(snapKey, px, JSON.stringify(snap));
+            pipe.pexpire(diffKey, px);
+        } else {
+            pipe.set(snapKey, JSON.stringify(snap));
+        }
+
+        // optional pruning: drop diffs <= snapshot cursor
+        pipe.lrange(diffKey, 0, -1);
+
+        const res = await pipe.exec();
+
+        try {
+            const arr: string[] = (res?.[res.length - 1]?.[1] as string[]) || [];
+            if (arr.length > 0) {
+                const fence = BigInt(snap.cursor?.lsn ?? "0");
+                let keepFrom = 0;
+                for (let i = 0; i < arr.length; i++) {
+                    const d = JSON.parse(arr[i]) as { lsn: string };
+                    if (BigInt(d.lsn) > fence) { keepFrom = i; break; }
+                    if (i === arr.length - 1) keepFrom = arr.length;
+                }
+                if (keepFrom > 0) {
+                    await this.redis.ltrim(diffKey, keepFrom, -1);
+                }
+            }
+        } catch {
+            // non-fatal
+        }
+    }
+
+    /** Store a diff for replay; append to tail and trim to `maxDiffsPerKey`. */
+    async addDiff(hashId: string, lsn: LsnString, b64: string): Promise<void> {
+        const diffKey = this.kDiff(hashId);
+        const item = JSON.stringify({ lsn, b64 } satisfies Diff);
+        const pipe = this.redis.pipeline();
+        pipe.rpush(diffKey, item);
+        // keep last N items
+        pipe.ltrim(diffKey, -this.maxDiffsPerKey, -1);
+        if (this.retentionMs) pipe.pexpire(diffKey, this.retentionMs);
+        await pipe.exec();
+    }
+
+    /** Return diffs with LSN strictly greater than `fence` (strict-after replay). */
+    async diffsAfter(hashId: string, fence: bigint): Promise<Diff[]> {
+        const raw = await this.redis.lrange(this.kDiff(hashId), 0, -1);
+        if (!raw || raw.length === 0) return [];
+        const out: Diff[] = [];
+        for (let i = 0; i < raw.length; i++) {
+            try {
+                const d = JSON.parse(raw[i]) as Diff;
+                if (BigInt(d.lsn) > fence) out.push(d);
+            } catch { /* ignore bad entries */ }
+        }
+        return out;
+    }
+
+    /** Optional: purge everything for a key (e.g., on unsubscribe or cleanup). */
+    async clear(hashId: string): Promise<void> {
+        await this.redis.del(this.kSnap(hashId), this.kDiff(hashId));
+    }
+
+    // ---------- internals ----------
+    private kSnap(hashId: string) { return `${this.prefix}snap:${hashId}`; }
+    private kDiff(hashId: string) { return `${this.prefix}diff:${hashId}`; }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/lsn.ts
+Size: 1.01 KB
+Code:
+// src/lsn.ts
+
+/**
+ * Monotonic watermark of the latest WAL LSN observed from the CDC stream.
+ *
+ * Why: Used to fence snapshots at subscribe time so diffs delivered after the
+ * subscription are strictly-after the snapshot’s LSN. This enforces ordering and
+ * avoids duplicates.
+ */
+// src/lsn.ts
+export let LAST_SEEN_LSN: bigint = 0n;
+
+export function updateLastSeenLsn(v: bigint) {
+  if (v > LAST_SEEN_LSN) LAST_SEEN_LSN = v;
+}
+
+/** unchanged helpers below **/
+export function asArrayBuffer(buf: Buffer): ArrayBuffer {
+  const out = new ArrayBuffer(buf.byteLength);
+  new Uint8Array(out).set(buf);
+  return out;
+}
+
+export function readLsnHeader(msg: { headers?: any }): bigint {
+  const h = (msg as any)?.headers?.() ?? (msg as any)?.headers;
+  const raw = h?.lsn ?? h?.LSN ?? h?.__lsn;
+  if (!raw) return 0n;
+  try { return BigInt(Buffer.isBuffer(raw) ? raw.toString() : String(raw)); }
+  catch { return 0n; }
+}
+
+export interface SubState {
+  cursorLsn: bigint;
+  buffering: boolean;
+  buffer: { lsn: bigint; payload: Buffer }[];
+}
+-------- [ Separator ] ------
+
+File Name: src/main.ts
+Size: 6.23 KB
+Code:
+// src/main.ts
+import {
+    PORT, KAFKA_BROKERS, KAFKA_GROUP, KAFKA_TOPICS,
+    SQL_RPC_REQUEST_TOPIC, SQL_RPC_REPLY_TOPIC,
+    SQL_RPC_GROUP_ID, SLOW_SOCKET_PAUSE_THRESHOLD,
+    QUERY_CONTROL_TOPIC
+} from "./config.js";
+
+import { createWsApp } from "./ws/app.js";
+import { SqlRpcClient } from "./rpc/sql-rpc.js";
+import { GatewayConsumer } from "./kafka.js";
+import { readLsnHeader, LAST_SEEN_LSN, updateLastSeenLsn } from "./lsn.js";
+import { deliverBinaryLSN, SLOW_SOCKETS } from "./delivery.js";
+
+import { HotCache } from "./keydb.js";
+import { SeedProducer } from "./seed-producer.js";
+import { QueryControlProducer } from "./query-control-producer.js";
+import { sessions } from "./state.js";
+import { safeSend } from "./ws/io.js";
+
+const qctl = new QueryControlProducer(KAFKA_BROKERS, QUERY_CONTROL_TOPIC);
+await qctl.start();
+
+const PAGE_SEED_TOPIC = process.env.PAGE_SEED_TOPIC || "server.page.seed";
+
+void (async function bootstrap() {
+    // --- SQL-RPC client
+    const sqlRpc = new SqlRpcClient({
+        brokers: KAFKA_BROKERS,
+        requestTopic: SQL_RPC_REQUEST_TOPIC,
+        replyTopic: SQL_RPC_REPLY_TOPIC,
+        groupId: SQL_RPC_GROUP_ID,
+        timeoutMs: 10_000
+    });
+    await sqlRpc.start();
+    console.log("[boot] sql-rpc ready", {
+        requestTopic: SQL_RPC_REQUEST_TOPIC, replyTopic: SQL_RPC_REPLY_TOPIC, groupId: SQL_RPC_GROUP_ID
+    });
+
+    // --- HotCache + seed producer
+    const hotCache = new HotCache();
+    const seed = new SeedProducer(KAFKA_BROKERS, PAGE_SEED_TOPIC);
+    await seed.start();
+
+    function publishSeed(companyId: string, table: string, hashId: string, cursor: any, rows: any[]) {
+        const routingKey = `${companyId}_${table}|${hashId}`;
+        const payload = Buffer.from(JSON.stringify({ companyId, table, hashId, cursor, rows }));
+        seed.send(routingKey, payload);
+    }
+
+    // --- WS app
+    const app = createWsApp({
+        publishQueryMeta: (routingKey, fb) => {
+            qctl.send(routingKey, fb ?? null);
+        },
+
+        // NOTE: consumes the query payload and calls the JSON-spec RPC
+        getSnapshot: async (companyId, table, hashId, fenceLsnStr, query) => {
+            const fence = BigInt(fenceLsnStr || "0");
+            let rows: any[] = [];
+            let cursor = { lsn: fence.toString() };
+
+            try {
+                if (query?.json && query.json.length > 0) {
+                    const out = await sqlRpc.getDataSnapshotWithQueryJson(companyId, table, query.json);
+                    if (Array.isArray(out)) {
+                        rows = out;
+                    } else if (out && typeof out === "object") {
+                        rows = Array.isArray(out.rows) ? out.rows : [];
+                        if (out.cursor && typeof out.cursor === "object") {
+                            cursor = { ...(out.cursor || {}), lsn: cursor.lsn };
+                        }
+                    }
+                } else {
+                    rows = await sqlRpc.getDataSnapshot(companyId, table, 500, 0);
+                }
+            } catch (e: any) {
+                console.error("[ws] rpc snapshot failed; retrying once:", String(e?.message || e));
+                rows = await sqlRpc.getDataSnapshot(companyId, table, 500, 0);
+            }
+
+            const snap = { rows, cursor, ts: Date.now() };
+
+            const routingKey = `${companyId}_${table}|${hashId}`;
+            try {
+                // Optional: cache snapshot
+                // await hotCache.setSnapshot(routingKey, snap);
+            } catch (e) {
+                console.warn("[ws] hotcache setSnapshot failed:", String((e as any)?.message || e));
+            }
+
+            publishSeed(companyId, table, hashId, cursor, rows);
+            return { rows, cursor };
+        },
+
+        // pass the rpc client so ws → rpc works
+        sqlRpc,
+    });
+
+    app.listen(PORT, ok => {
+        if (!ok) { console.error("WS listen failed"); process.exit(1); }
+        console.log(`WS listening on :${PORT}`);
+        console.log(`Health check: http://localhost:${PORT}/health`);
+    });
+
+    // --- CDC consumer
+    const consumer = new GatewayConsumer(
+        KAFKA_TOPICS, KAFKA_GROUP, KAFKA_BROKERS,
+        {
+            onMessage: (key, value, raw) => {
+                const lsn = readLsnHeader(raw);
+                if (lsn > LAST_SEEN_LSN) updateLastSeenLsn(lsn);
+
+                switch (raw.topic) {
+                    case "server.page.diffs": {
+                        console.log("[cdc] page.diff", { key: key, bytes: (value as Buffer).byteLength, lsn: lsn.toString() });
+                        deliverBinaryLSN(key, value as Buffer, lsn);
+                        break;
+                    }
+                    case "server.row.events": {
+                        try {
+                            const env = JSON.parse((value as Buffer).toString("utf8"));
+                            let routingKey=env.routingKey;
+                            for (const s of sessions.values()) {
+                                if (!s.subs.has(routingKey)) continue;
+                                safeSend(s.socket, {
+                                    op: "rowEvent",
+                                    hashId: String(routingKey.split("|")[1] || env.hashId || ""),
+                                    event: env,
+                                    version: Number(lsn.toString()) || 0
+                                } as any);
+                            }
+                            console.log("[cdc] row.event", { key: key, kind: env, lsn: env?.lsn ?? lsn.toString(), });
+                        } catch (e) {
+                            console.error("[cdc] row.event parse error", e);
+                        }
+                        break;
+                    }
+                    default:
+                        console.warn("[cdc] unknown topic", raw.topic);
+                }
+            },
+            onError: (err) => console.error("[kafka] error", err),
+            onRebalance: (ev) => console.log("[kafka] rebalance", ev?.code ?? ev),
+        }
+    );
+    consumer.start();
+
+    setInterval(() => {
+        if (SLOW_SOCKETS > SLOW_SOCKET_PAUSE_THRESHOLD) {
+            console.warn("[cdc] pausing consumer due to slow sockets", { slow: SLOW_SOCKETS });
+            consumer.pauseAll();
+        } else {
+            consumer.resumeAll();
+        }
+    }, 250);
+})();
+-------- [ Separator ] ------
+
+File Name: src/mock-sql-worker.mjs
+Size: 2.53 KB
+Code:
+// mock-sql-worker.mjs
+// Dev helper: minimal Kafka-based RPC worker that responds to SQL RPC requests
+// with a dummy RowsJson payload, for local testing of the client wiring.
+import pkg from "node-rdkafka";
+const { KafkaConsumer, Producer } = pkg;
+import * as flatbuffers from "flatbuffers";
+import { SqlRpc as sr } from "@cladbe/sql-protocol";
+const SqlRpc = sr.SqlRpc;
+
+const BROKERS = process.env.KAFKA_BROKERS || "localhost:9092";
+const REQ_TOPIC = process.env.SQL_RPC_REQUEST_TOPIC || "sql.rpc.requests";
+
+const cons = new KafkaConsumer({
+    "metadata.broker.list": BROKERS,
+    "group.id": "mock-sql-worker",
+    "enable.auto.commit": true,
+    "allow.auto.create.topics": true
+}, { "auto.offset.reset": "latest" });
+
+const prod = new Producer({ "metadata.broker.list": BROKERS });
+
+await new Promise((res, rej) => prod.on("ready", res).on("event.error", rej).connect());
+await new Promise((res) => {
+    cons.on("ready", () => { cons.subscribe([REQ_TOPIC]); cons.consume(); res(); })
+        .on("data", onData)
+        .on("event.error", (e) => console.error("[mock] consumer error", e));
+    cons.connect();
+});
+
+function onData(m) {
+    if (!m.value) return;
+    const bb = new flatbuffers.ByteBuffer(new Uint8Array(m.value));
+    const req = SqlRpc.RequestEnvelope.getRootAsRequestEnvelope(bb);
+    const corr = req.correlationId() || "";
+    const replyTopic = req.replyTopic() || "sql.rpc.responses";
+    const method = req.method();
+
+    console.log("[mock] ⇐", { method, corr, replyTopic });
+
+    // build dummy RowsJson: [{"mock":true}]
+    const b = new flatbuffers.Builder(256);
+    const rowStr = b.createString(JSON.stringify({ mock: true }));
+    const rowsVec = SqlRpc.RowsJson.createRowsVector(b, [rowStr]);
+    SqlRpc.RowsJson.startRowsJson(b);
+    SqlRpc.RowsJson.addRows(b, rowsVec);
+    const rowsOff = SqlRpc.RowsJson.endRowsJson(b);
+
+    const corrOff = b.createString(corr);
+    SqlRpc.ResponseEnvelope.startResponseEnvelope(b);
+    SqlRpc.ResponseEnvelope.addCorrelationId(b, corrOff);
+    SqlRpc.ResponseEnvelope.addOk(b, true);
+    SqlRpc.ResponseEnvelope.addErrorCode(b, SqlRpc.ErrorCode.NONE);
+    SqlRpc.ResponseEnvelope.addDataType(b, SqlRpc.RpcResponse.RowsJson);
+    SqlRpc.ResponseEnvelope.addData(b, rowsOff);
+    const envOff = SqlRpc.ResponseEnvelope.endResponseEnvelope(b);
+    b.finish(envOff);
+    const buf = Buffer.from(b.asUint8Array());
+
+    try {
+        prod.produce(replyTopic, null, buf, corr);
+        console.log("[mock] ⇒", { corr, replyTopic });
+    } catch (e) {
+        console.error("[mock] produce error", e);
+    }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/query-control-producer.ts
+Size: 1.58 KB
+Code:
+// src/query-control-producer.ts
+import pkg from "node-rdkafka";
+const { Producer } = pkg;
+
+/**
+ * QueryControlProducer
+ *
+ * Role: Publishes or clears per-query metadata (qmeta), such as encoded filters or
+ * query plans, to a Kafka topic read by downstream Streams processors. This allows
+ * servers to warm materialized indexes or stores keyed by `hashId` before diffs arrive.
+ */
+export class QueryControlProducer {
+  private prod: any;
+  private ready = false;
+
+  /**
+   * @param brokers Kafka broker list
+   * @param topic   Topic that downstream processors consume to react to query lifecycle
+   */
+  constructor(private brokers: string, private topic: string) {
+    this.prod = new Producer({
+      "metadata.broker.list": brokers,
+      "client.id": "ws-gateway-qctl",
+      "socket.keepalive.enable": true,
+    });
+  }
+
+  /** Connects the underlying producer; idempotent. */
+  async start() {
+    if (this.ready) return;
+    await new Promise<void>((res, rej) => {
+      this.prod.on("ready", () => { this.ready = true; res(); })
+               .on("event.error", rej)
+               .connect();
+    });
+  }
+
+  /**
+   * Publish qmeta for a given key (typically the query `hashId`).
+   * Pass `null` value to signal clearing/removal of query metadata.
+   */
+  send(key: string, value: Buffer | null) {
+    if (!this.ready) throw new Error("QueryControlProducer not ready");
+    try { this.prod.produce(this.topic, null, value ?? undefined, key); }
+    catch (e) { console.error("[qctl] produce error", e); }
+  }
+
+  /** Disconnects the producer. */
+  stop() { try { this.prod.disconnect(); } catch {} }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/rpc/sql-rpc.ts
+Size: 15.38 KB
+Code:
+// src/rpc/sql-rpc.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+
+import pkg from "node-rdkafka";
+const { Producer, KafkaConsumer } = pkg;
+import type { LibrdKafkaError, Message } from "node-rdkafka";
+import { randomUUID } from "node:crypto";
+
+import { SqlRpc as sr } from "@cladbe/sql-protocol";
+
+// 🚦 use the codec for building requests & parsing responses
+import {
+  buildRequestBuffer,
+  parseResponseBuffer,
+  // types for payloads
+  type RequestEnvelopeJson,
+  type GetDataJson,
+  type GetSingleJson,
+  type AddSingleJson,
+  type UpdateSingleJson,
+  type DeleteRowJson,
+  type CreateTableJson,
+  type TableExistsJson,
+  type RunAggregationJson,
+  type TableDefinitionJson,
+} from "@cladbe/sql-codec";
+
+type Pending = {
+  resolve: (v: any) => void;
+  reject: (e: any) => void;
+  timer: NodeJS.Timeout;
+  method: number;
+};
+
+export type SqlRpcClientOpts = {
+  brokers: string;
+  requestTopic?: string;
+  replyTopic: string;
+  groupId?: string;
+  timeoutMs?: number;
+};
+
+export class SqlRpcClient {
+  private prod: InstanceType<typeof Producer>;
+  private cons: InstanceType<typeof KafkaConsumer>;
+  private pending = new Map<string, Pending>();
+  private opts: Required<SqlRpcClientOpts>;
+
+  constructor(opts: SqlRpcClientOpts) {
+    this.opts = {
+      requestTopic: "sql.rpc.requests",
+      groupId: "ws-gateway-rpc",
+      timeoutMs: 10_000,
+      ...opts,
+    } as Required<SqlRpcClientOpts>;
+
+    this.prod = new Producer({
+      "metadata.broker.list": this.opts.brokers,
+      "client.id": "ws-gateway-sqlrpc",
+      "socket.keepalive.enable": true,
+      dr_cb: false,
+    });
+
+    this.cons = new KafkaConsumer(
+      {
+        "metadata.broker.list": this.opts.brokers,
+        "group.id": this.opts.groupId,
+        "enable.auto.commit": true,
+        "allow.auto.create.topics": true,
+        "socket.keepalive.enable": true,
+        "client.id": "ws-gateway-sqlrpc",
+      },
+      { "auto.offset.reset": "latest" }
+    );
+  }
+
+  async start() {
+    await new Promise<void>((res, rej) => {
+      this.prod
+        .on("ready", () => {
+          console.log("[sql-rpc] producer ready", {
+            brokers: this.opts.brokers,
+            requestTopic: this.opts.requestTopic,
+          });
+          res();
+        })
+        .on("event.error", (e: any) => {
+          console.error("[sql-rpc] producer error", e);
+          rej(e);
+        })
+        .connect();
+    });
+
+    await new Promise<void>((res) => {
+      this.cons
+        .on("ready", () => {
+          console.log("[sql-rpc] consumer ready", {
+            group: this.opts.groupId,
+            replyTopic: this.opts.replyTopic,
+            brokers: this.opts.brokers,
+          });
+          this.cons.subscribe([this.opts.replyTopic]);
+          this.cons.consume();
+          res();
+        })
+        .on("data", (m: Message) => this.onData(m))
+        .on("event.error", (e: LibrdKafkaError) =>
+          console.error("[sql-rpc] consumer error", e)
+        );
+      this.cons.connect();
+    });
+  }
+
+  stop() {
+    try {
+      this.prod.disconnect();
+    } catch {}
+    try {
+      this.cons.disconnect();
+    } catch {}
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(new Error("rpc shutdown"));
+      this.pending.delete(id);
+    }
+  }
+
+  // ---------- Consumer path (decode via codec) ----------
+  private onData(m: Message) {
+    if (!m.value) return;
+
+    try {
+      const buf = m.value as Buffer;
+      const decoded = parseResponseBuffer(buf); // { correlationId, ok, errorCode, data? }
+
+      const rec = this.pending.get(decoded.correlationId);
+      if (!rec) return;
+
+      if (!decoded.ok) {
+        clearTimeout(rec.timer);
+        this.pending.delete(decoded.correlationId);
+        rec.reject(new Error(decoded.errorMessage || "rpc error"));
+        return;
+      }
+
+      // Normalize to friendly JS shapes:
+      // - RowsJson         -> rows[]
+      // - RowJson          -> { ...row } | null
+      // - RowsWithCursor   -> { rows, cursor }
+      // - BoolRes          -> boolean
+      // - AggRes           -> { count?, sumValues?, avgValues?, ... }
+      let out: any = null;
+      const d = decoded.data;
+
+      if (d?.type === "RowsJson") {
+        out = (d.rows || []).map((s) => JSON.parse(s));
+      } else if (d?.type === "RowJson") {
+        out = d.row ? JSON.parse(d.row) : null;
+      } else if (d?.type === "RowsWithCursor") {
+        out = {
+          rows: (d.rows || []).map((s) => JSON.parse(s)),
+          cursor: d.cursor || {},
+        };
+      } else if (d?.type === "BoolRes") {
+        out = !!d.value;
+      } else if (d?.type === "AggRes") {
+        out = d.agg || {};
+      }
+
+      clearTimeout(rec.timer);
+      this.pending.delete(decoded.correlationId);
+      rec.resolve(out);
+    } catch (e) {
+      console.error("[sql-rpc] decode error", e);
+    }
+  }
+
+  // ---------- Producer path (build via codec) ----------
+  private sendViaCodec(req: RequestEnvelopeJson): Promise<any> {
+    const corr = req.correlationId;
+
+    return new Promise<any>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(corr);
+        console.error("[sql-rpc] ✖ timeout", {
+          corr,
+          method: req.method,
+          timeoutMs: this.opts.timeoutMs,
+        });
+        reject(new Error("rpc timeout"));
+      }, this.opts.timeoutMs);
+
+      this.pending.set(corr, {
+        resolve,
+        reject,
+        timer,
+        method: methodEnum(req.method),
+      });
+
+      try {
+        const buf = buildRequestBuffer(req);
+        this.prod.produce(this.opts.requestTopic, null, buf, corr);
+        console.log("[sql-rpc] ⇒ send", {
+          corr,
+          method: req.method,
+          topic: this.opts.requestTopic,
+          replyTopic: this.opts.replyTopic,
+          bytes: buf.byteLength,
+        });
+      } catch (e) {
+        clearTimeout(timer);
+        this.pending.delete(corr);
+        reject(e);
+      }
+    });
+  }
+
+  // ======================================================
+  // ===============  Public typed methods  ===============
+  // ======================================================
+
+  /** GET_DATA without explicit query spec (offset/limit path, strictAfter default true). */
+  getDataSnapshot(
+    companyId: string,
+    tableName: string,
+    limit = 500,
+    offset = 0
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: GetDataJson = {
+      companyId,
+      tableName,
+      limit,
+      offset,
+      strictAfter: true,
+    };
+
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "GET_DATA",
+      payload,
+    });
+  }
+
+  /**
+   * GET_DATA using a client JSON query (wrapper/order/cursor/limit).
+   * Expects the same shape you publish to Streams; we translate it for the codec.
+   */
+  getDataSnapshotWithQueryJson(
+    companyId: string,
+    tableName: string,
+    jsonSpec: string
+  ): Promise<any> {
+    const spec = safeParseJson(jsonSpec) || {};
+    const corr = cryptoRandomId();
+
+    const payload: GetDataJson = {
+      companyId,
+      tableName,
+      strictAfter: true,
+      limit: asU32(spec?.limit),
+      // orderKeys: [{ field, sort }]
+      orderKeys: Array.isArray(spec?.order)
+        ? spec.order.map((o: any) => ({
+            field: String(o.field || ""),
+            sort: String(o.sort || "DESC_DEFAULT"),
+          }))
+        : undefined,
+      // cursor: { field: value }
+      cursor: cursorArrayToObject(spec?.cursor),
+      // filters: [ wrapper ]
+      filters: spec?.wrapper ? [wrapperToCodec(spec.wrapper)] : undefined,
+    };
+
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "GET_DATA",
+      payload,
+    });
+  }
+
+  /** GET_SINGLE by PK. Returns a single row object or null. */
+  getSingle(
+    companyId: string,
+    tableName: string,
+    primaryKeyColumn: string,
+    primaryId: string
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: GetSingleJson = {
+      companyId,
+      tableName,
+      primaryKeyColumn,
+      primaryId,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "GET_SINGLE",
+      payload,
+    });
+  }
+
+  /** ADD_SINGLE: insert a single row (payload is raw JSON object). Returns BoolRes or RowJson depending on worker. */
+  addSingle(
+    companyId: string,
+    tableName: string,
+    primaryKeyColumn: string,
+    data: Record<string, unknown>
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: AddSingleJson = {
+      companyId,
+      tableName,
+      primaryKeyColumn,
+      data,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "ADD_SINGLE",
+      payload,
+    });
+  }
+
+  /** UPDATE_SINGLE: patch a row by PK. Returns BoolRes or RowJson depending on worker. */
+  updateSingle(
+    companyId: string,
+    tableName: string,
+    primaryKeyColumn: string,
+    primaryId: string,
+    updates: Record<string, unknown>
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: UpdateSingleJson = {
+      companyId,
+      tableName,
+      primaryKeyColumn,
+      primaryId,
+      updates,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "UPDATE_SINGLE",
+      payload,
+    });
+  }
+
+  /** DELETE_ROW by PK. Returns BoolRes. */
+  deleteRow(
+    companyId: string,
+    tableName: string,
+    primaryKeyColumn: string,
+    primaryId: string
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: DeleteRowJson = {
+      companyId,
+      tableName,
+      primaryKeyColumn,
+      primaryId,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "DELETE_ROW",
+      payload,
+    });
+  }
+
+  /** CREATE_TABLE from a TableDefinition JSON. Returns BoolRes (worker-dependent) or nothing. */
+  createTable(
+    companyId: string,
+    definition: TableDefinitionJson
+  ): Promise<any> {
+    const corr = cryptoRandomId();
+    const payload: CreateTableJson = {
+      companyId,
+      definition,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "CREATE_TABLE",
+      payload,
+    });
+  }
+
+  /** TABLE_EXISTS: true/false. */
+  tableExists(companyId: string, tableName: string): Promise<boolean> {
+    const corr = cryptoRandomId();
+    const payload: TableExistsJson = {
+      companyId,
+      tableName,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "TABLE_EXISTS",
+      payload,
+    });
+  }
+
+  /**
+   * RUN_AGGREGATION: sum/avg/min/max/count with optional filters.
+   * returns { count?, sumValues?, avgValues?, minimumValues?, maximumValues? }
+   */
+  runAggregation(args: {
+    companyId: string;
+    tableName: string;
+    countEnabled?: boolean;
+    sumFields?: string[];
+    averageFields?: string[];
+    minimumFields?: string[];
+    maximumFields?: string[];
+    /** wrapper JSON in the client shape (filter_wrapper_type/filters) */
+    wrapper?: any;
+  }): Promise<any> {
+    const {
+      companyId,
+      tableName,
+      countEnabled,
+      sumFields,
+      averageFields,
+      minimumFields,
+      maximumFields,
+      wrapper,
+    } = args;
+
+    const corr = cryptoRandomId();
+    const payload: RunAggregationJson = {
+      companyId,
+      tableName,
+      countEnabled: !!countEnabled,
+      sumFields,
+      averageFields,
+      minimumFields,
+      maximumFields,
+      // codec expects filters?: [ SqlDataFilterWrapper ]
+      filters: wrapper ? [wrapperToCodec(wrapper)] : undefined,
+    };
+    return this.sendViaCodec({
+      correlationId: corr,
+      replyTopic: this.opts.replyTopic,
+      method: "RUN_AGGREGATION",
+      payload,
+    });
+  }
+
+  // ---------------- Optional: generic passthrough ----------------
+  /** Fire a raw envelope (when you already prepared a codec payload). */
+  callRaw(envelope: RequestEnvelopeJson) {
+    return this.sendViaCodec(envelope);
+  }
+}
+
+// ---------- helpers ----------
+
+function cryptoRandomId(): string {
+  try {
+    return randomUUID();
+  } catch {
+    /* fallback */
+  }
+  return Math.random().toString(36).slice(2) + Date.now().toString(36);
+}
+
+function methodEnum(m: RequestEnvelopeJson["method"]): number {
+  switch (m) {
+    case "GET_DATA":
+      return sr.SqlRpc.RpcMethod.GET_DATA;
+    case "GET_SINGLE":
+      return sr.SqlRpc.RpcMethod.GET_SINGLE;
+    case "ADD_SINGLE":
+      return sr.SqlRpc.RpcMethod.ADD_SINGLE;
+    case "UPDATE_SINGLE":
+      return sr.SqlRpc.RpcMethod.UPDATE_SINGLE;
+    case "DELETE_ROW":
+      return sr.SqlRpc.RpcMethod.DELETE_ROW;
+    case "CREATE_TABLE":
+      return sr.SqlRpc.RpcMethod.CREATE_TABLE;
+    case "TABLE_EXISTS":
+      return sr.SqlRpc.RpcMethod.TABLE_EXISTS;
+    case "RUN_AGGREGATION":
+      return sr.SqlRpc.RpcMethod.RUN_AGGREGATION;
+    default:
+      return 0;
+  }
+}
+
+function safeParseJson(s: unknown): any {
+  if (typeof s !== "string" || s.length === 0) return null;
+  try {
+    return JSON.parse(s);
+  } catch {
+    return null;
+  }
+}
+function asU32(n: any): number | undefined {
+  const v = Number(n);
+  return Number.isFinite(v) ? v >>> 0 : undefined;
+}
+
+/** Convert the array-ish cursor [{field, value: Tagged}] to { field: plainValue } */
+function cursorArrayToObject(
+  arr: any
+): Record<string, unknown> | undefined {
+  if (!Array.isArray(arr) || arr.length === 0) return undefined;
+  const out: Record<string, unknown> = {};
+  for (const c of arr) {
+    const f = String(c?.field || "");
+    if (!f) continue;
+    out[f] = taggedToPlain(c?.value);
+  }
+  return Object.keys(out).length ? out : undefined;
+}
+
+/**
+ * Convert the "StreamingSqlDataFilter.toMap()" style wrapper into the codec’s
+ * SqlDataFilterWrapper/SqlDataFilter shapes.
+ */
+function wrapperToCodec(w: any): any {
+  // wrapper: { filter_wrapper_type: "and"|"or", filters: [...] }
+  const type = String(w?.filter_wrapper_type || "and");
+  const filters = Array.isArray(w?.filters) ? w.filters : [];
+
+  const codecFilters = filters.map((node: any) => {
+    if (node?.filter_wrapper_type != null) {
+      return wrapperToCodec(node);
+    }
+    // basic: { field_name, value: Tagged, filter_type }
+    return {
+      fieldName: String(node?.field_name || ""),
+      value: taggedToPlain(node?.value),
+      filterType: String(node?.filter_type || "equals"),
+    };
+  });
+
+  return {
+    filterWrapperType: type === "or" ? "or" : "and",
+    filters: codecFilters,
+  };
+}
+
+/** Tagged union { Kind: {...} } → plain JS value */
+function taggedToPlain(tagged: any): unknown {
+  if (!tagged || typeof tagged !== "object") return null;
+  const [tag, payload] = Object.entries(tagged)[0] ?? [undefined, undefined];
+  const p: any = payload ?? {};
+
+  switch (tag) {
+    case "StringValue":
+      return String(p.value ?? "");
+    case "NumberValue":
+      return Number(p.value ?? 0);
+    case "BoolValue":
+      return !!p.value;
+    case "NullValue":
+      return null;
+    case "Int64Value":
+      return Number(p.value ?? 0);
+    case "TimestampValue":
+      return Number(p.epoch ?? 0);
+
+    case "StringList":
+      return Array.isArray(p.values)
+        ? p.values.map((x: any) => String(x))
+        : [];
+    case "Int64List":
+      return Array.isArray(p.values)
+        ? p.values.map((x: any) => Number(x))
+        : [];
+    case "Float64List":
+      return Array.isArray(p.values)
+        ? p.values.map((x: any) => Number(x))
+        : [];
+    case "BoolList":
+      return Array.isArray(p.values)
+        ? p.values.map((x: any) => !!x)
+        : [];
+
+    default:
+      return null;
+  }
+}
+-------- [ Separator ] ------
+
+File Name: src/seed-producer.ts
+Size: 1.49 KB
+Code:
+// src/seed-producer.ts
+import pkg from "node-rdkafka";
+const { Producer } = pkg;
+
+/**
+ * SeedProducer
+ *
+ * Role: Emits snapshot seed messages for a query/page so downstream state stores (KTables,
+ * caches) can be pre-populated immediately after the gateway serves a snapshot. This reduces
+ * cold-start latency for streaming consumers that rely on the same key-space.
+ */
+export class SeedProducer {
+  private producer: any;
+  private ready = false;
+
+  /**
+   * @param brokers Kafka broker list
+   * @param topic   Seed topic consumed by Streams processors
+   */
+  constructor(private brokers: string, private topic: string) {
+    this.producer = new Producer({
+      "metadata.broker.list": this.brokers,
+      "client.id": "ws-gateway-seed",
+      "socket.keepalive.enable": true,
+      dr_cb: false,
+    });
+  }
+
+  /** Connects the underlying producer; idempotent. */
+  async start(): Promise<void> {
+    if (this.ready) return;
+    await new Promise<void>((res, rej) => {
+      this.producer
+        .on("ready", () => { this.ready = true; res(); })
+        .on("event.error", rej)
+        .connect();
+    });
+  }
+
+  /** Send a seed record keyed by query id (e.g., company_table|hashId). */
+  send(key: string, value: Buffer) {
+    if (!this.ready) throw new Error("SeedProducer not ready");
+    try { this.producer.produce(this.topic, null, value, key); }
+    catch (e) { console.error("[seed] produce error", e); }
+  }
+
+  /** Disconnects the producer. */
+  stop() { try { this.producer.disconnect(); } catch {} }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/state.ts
+Size: 1.50 KB
+Code:
+// src/state.ts
+import type { SubKey } from "./types.js";
+
+/**
+ * Session
+ *
+ * Represents a connected WS client and its active subscriptions. Delivery paths
+ * use this to route diffs, buffer JSON frames under backpressure, and keep
+ * per-connection context.
+ */
+export interface Session {
+    id: string;
+    socket: any;             // uWS.WebSocket
+    userId: string;
+    tenantId: string;
+    subs: Set<SubKey>;
+    sendQueue: string[];     // backpressure buffer (serialized frames)
+};
+
+/** All active sessions keyed by connection id. */
+export const sessions = new Map<string, Session>();
+
+/**
+ * Reverse index: subKey → set of session ids.
+ * subKey is whatever callers pass (we typically use `hashId`). If you support
+ * multi-tenant routing, ensure the string is already namespaced upstream to avoid
+ * collisions; the gateway treats it as opaque.
+ */
+export const subToSessions = new Map<SubKey, Set<string>>();
+
+/** Add a subscription mapping for a session. */
+export function addSub(s: Session, key: SubKey) {
+    if (!s.subs.has(key)) {
+        s.subs.add(key);
+        if (!subToSessions.has(key)) subToSessions.set(key, new Set());
+        subToSessions.get(key)!.add(s.id);
+    }
+}
+
+/** Remove a subscription mapping; drops the index entry if last subscriber leaves. */
+export function removeSub(s: Session, key: SubKey) {
+    if (s.subs.delete(key)) {
+        const g = subToSessions.get(key);
+        if (g) {
+            g.delete(s.id);
+            if (g.size === 0) subToSessions.delete(key);
+        }
+    }
+}
+-------- [ Separator ] ------
+
+File Name: src/test-producer.cjs
+Size: 612 B
+Code:
+// test-producer.js
+// Tiny producer used to verify a local Kafka setup by sending a single message.
+const Kafka = require('node-rdkafka');
+console.log('librdkafkaVersion:', Kafka.librdkafkaVersion);
+const producer = new Kafka.Producer({'metadata.broker.list':'localhost:9092','dr_cb':true});
+producer.on('ready', () => {
+    console.log('producer ready');
+    producer.produce('test_topic', null, Buffer.from('hello'), 'key1', Date.now());
+    producer.flush(5000, () => { console.log('flushed'); process.exit(0); });
+});
+producer.on('event.error', (e)=>console.error('producer error', e));
+producer.connect();
+
+-------- [ Separator ] ------
+
+File Name: src/types-ext.d.ts
+Size: 1.17 KB
+Code:
+// types-ext.d.ts
+// Lightweight ambient typings for node-rdkafka (subset we use) to improve DX
+// when community types are unavailable or incomplete.
+// declare module 'node-rdkafka' {
+//     // Minimal surface we use; you can replace with community types
+//     export interface Message {
+//         value?: Buffer;
+//         key?: Buffer | string | null;
+//         topic: string;
+//         partition: number;
+//         offset: number;
+//         timestamp: number;
+//     }
+//     export interface LibrdKafkaError extends Error {
+//         code: number;
+//     }
+//     export class KafkaConsumer {
+//         constructor(globalConf: any, topicConf?: any);
+//         connect(): void;
+//         disconnect(): void;
+//         subscribe(topics: string[]): void;
+//         consume(): void;
+//         assignments(): any[];
+//         pause(assignments: any[]): void;
+//         resume(assignments: any[]): void;
+//         on(event: 'ready', cb: () => void): this;
+//         on(event: 'data', cb: (message: Message) => void): this;
+//         on(event: 'rebalance', cb: (ev: any) => void): this;
+//         on(event: 'event.error', cb: (err: LibrdKafkaError) => void): this;
+//     }
+// }
+
+-------- [ Separator ] ------
+
+File Name: src/types.ts
+Size: 2.52 KB
+Code:
+// src/types.ts
+/**
+ * WebSocket wire protocol and routing helpers.
+ *
+ * The gateway speaks a small op-based protocol to clients. Important ops:
+ * - subscribe/unsubscribe identify a table + query `hashId` and optionally a resume LSN.
+ * - rpc is a generic passthrough to SQL-RPC (Kafka+FB).
+ * - snapshot/diff/diffB64 frames are used to initialize and update client state.
+ */
+export type ClientMsg =
+    | { op: "ping" }
+    | {
+    op: "subscribe";
+    table: string;
+    hashId: string;
+    // accept either a FlatBuffer (b64) or JSON query string
+    queryFbB64?: string;
+    queryJson?: string;
+    resumeFromVersion?: number;
+}
+    | { op: "unsubscribe"; table: string; hashId: string }
+    | {
+    /** Generic RPC call over WS */
+    op: "rpc";
+    /** One of SqlRpc.RpcMethod names, e.g. "GET_SINGLE" */
+    method: string;
+    /** Optional override; defaults to the socket tenantId */
+    companyId?: string;
+    /** Optional; many methods still need a table */
+    table?: string;
+    /** Free-form payload matching the RPC method’s expected fields */
+    payload?: any;
+    /** Echoed back in the result */
+    correlationId?: string;
+};
+
+/** Server → client messages across snapshot/diff and control paths. */
+export type ServerMsg =
+    | { op: "pong" }
+    | { op: "ack"; hashId: string }
+    | { op: "snapshot"; hashId: string; version: number; cursor: Record<string, any>; rows: any[] }
+    | { op: "diff"; hashId: string; version: number; cursor: Record<string, any>; changes: any[] }
+    | { op: "diffB64"; hashId: string; b64: string }
+    | {
+    op: "rowEvent"; hashId: string; lsn: string; kind: "added" | "modified" | "removed"; pk: string;
+    pos?: number | null; from?: number | null; needFetch?: boolean; row?: any
+}
+    | { op: "rpcResult"; method: string; correlationId?: string; ok: true; data: any }
+    | { op: "rpcResult"; method: string; correlationId?: string; ok: false; error: string }
+    | { op: "error"; code: string; message: string };
+
+/** Subscription index key. Conventionally `${table}|${hashId}`, but routing uses the `hashId` string itself. */
+export type SubKey = string;
+/**
+ * Compute a subscription key for indexing.
+ * Note: The gateway routes by the provided `hashId` string. If you have a multi-tenant setup,
+ * ensure the `hashId` you pass is already namespaced (e.g., `<tenant>_<table>|<hash>`), so
+ * there are no collisions inside the gateway. The gateway does not enforce any uniqueness
+ * policy itself; it just treats `hashId` as an opaque key.
+ */
+export const subKey = (_table: string, hashId: string) => hashId;
+-------- [ Separator ] ------
+
+File Name: src/ws/app.ts
+Size: 1.15 KB
+Code:
+// src/ws/app.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import uWS from "uWebSockets.js";
+import { sessions } from "../state.js";
+import { SLOW_SOCKETS } from "../delivery.js";
+import { createWsHandlers } from "./handlers.js";
+import type { WsDeps } from "./wire.js";
+
+/**
+ * Create the uWS application with WS endpoint and a health probe.
+ *
+ * Why: Aggregates the WS behavior (subscribe/unsubscribe handling via handlers)
+ * and exposes /health to aid orchestration and debugging.
+ * How it fits: Mounted by main.ts to accept client connections and surface
+ * slow socket metrics used by the CDC flow-control.
+ */
+export function createWsApp(deps: WsDeps) {
+  const handlers = createWsHandlers(deps);
+
+  return uWS.App({})
+    .ws("/*", handlers)
+    .get("/health", (res, _req) => {
+      res.writeHeader("Content-Type", "application/json");
+      res.end(JSON.stringify({
+        status: "healthy",
+        connections: [...sessions.keys()].length,
+        sessions: sessions.size,
+        uptime: process.uptime(),
+        slowSockets: SLOW_SOCKETS
+      }));
+    })
+    .any("/*", (res, _req) => void res.writeStatus("200 OK").end("cladbe-ws-gateway"));
+}
+
+-------- [ Separator ] ------
+
+File Name: src/ws/bus.ts
+Size: 871 B
+Code:
+// src/ws/bus.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type uWS from "uWebSockets.js";
+
+/** Registry of active connections for generic typed messages (non-CDC). */
+export const connections = new Map<
+  string,
+  { id: string; socket: uWS.WebSocket<any>; userId?: string }
+>();
+
+/** Best-effort JSON send for the generic bus; attaches a server timestamp. */
+export function safeSendGeneric(ws: uWS.WebSocket<any>, payload: any) {
+  try { ws.send(JSON.stringify({ ...payload, timestamp: Date.now() })); } catch {}
+}
+
+/** Broadcast a JSON payload to all connections, optionally excluding one id. */
+export function broadcastAll(payload: any, excludeId?: string) {
+  for (const [id, c] of connections) {
+    if (excludeId && id === excludeId) continue;
+    try { c.socket.send(JSON.stringify({ ...payload, timestamp: Date.now() })); } catch {}
+  }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/ws/handlers.ts
+Size: 5.74 KB
+Code:
+// src/ws/handlers.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type uWS from "uWebSockets.js";
+import { randomUUID } from "node:crypto";
+import { PING_INTERVAL_MS } from "../config.js";
+import { sessions, removeSub } from "../state.js";
+import { type ClientMsg } from "../types.js";
+import { connections, safeSendGeneric, broadcastAll } from "./bus.js";
+import { safeSend } from "./io.js";
+import {markFast, SLOW_SOCKETS} from "../delivery.js";
+import { handleSubscribe, handleUnsubscribe } from "./subscribe.js";
+import type { WsDeps } from "./wire.js";
+import { subscribeSchema, unsubscribeSchema, rpcSchema } from "./schemas.js";
+import { handleRpc } from "./rpc.js";
+
+export function createWsHandlers(deps: WsDeps): uWS.WebSocketBehavior<any> {
+    return {
+        idleTimeout: 60,
+        maxBackpressure: 1 << 20,
+        maxPayloadLength: 1 << 20,
+
+        upgrade: (res, req, context) => {
+            try {
+                const userId = req.getHeader("x-user-id") || "anonymous";
+                const tenantId = req.getHeader("x-tenant") || "demo";
+                console.log("[ws] upgrade", { userId, tenantId, url: req.getUrl() });
+                res.upgrade(
+                    { userId, tenantId },
+                    req.getHeader("sec-websocket-key"),
+                    req.getHeader("sec-websocket-protocol"),
+                    req.getHeader("sec-websocket-extensions"),
+                    context
+                );
+            } catch (err) {
+                console.error("[ws] upgrade failed", err);
+                res.writeStatus("400 Bad Request").end("Upgrade failed");
+            }
+        },
+
+        open: (ws) => {
+            const id = randomUUID();
+            (ws as any).id = id;
+
+            const s = {
+                id,
+                socket: ws,
+                userId: (ws as any).userId,
+                tenantId: (ws as any).tenantId,
+                subs: new Set<string>(),
+                sendQueue: [] as string[],
+                subStates: new Map<string, any>(),
+            } as any;
+            sessions.set(id, s);
+
+            console.log("[ws] open", { id, userId: s.userId, tenantId: s.tenantId });
+
+            connections.set(id, { id, socket: ws, userId: s.userId });
+            safeSendGeneric(ws, { type: "welcome", data: { connectionId: id, connectedClients: connections.size } });
+            broadcastAll({ type: "user_joined", data: { userId: s.userId, connectionId: id } }, id);
+
+            const interval = setInterval(() => { try { ws.ping(); } catch {} }, PING_INTERVAL_MS);
+            (ws as any)._heartbeat = interval;
+        },
+
+        message: (ws, arrayBuffer, isBinary) => {
+            const id = (ws as any).id;
+            if (isBinary) return;
+
+            let raw: any;
+            try {
+                raw = JSON.parse(Buffer.from(arrayBuffer).toString("utf8"));
+            } catch {
+                safeSendGeneric(ws, { type: "error", data: { message: "Invalid JSON message" } });
+                return;
+            }
+
+            // typed channel
+            if (raw && typeof raw.type === "string") {
+                const s = sessions.get(id);
+                switch (raw.type) {
+                    case "ping": safeSendGeneric(ws, { type: "pong" }); return;
+                    case "echo": safeSendGeneric(ws, { type: "echo_response", data: raw.data }); return;
+                    case "broadcast":
+                        broadcastAll({ type: "broadcast_message", data: { from: s?.userId, message: raw.data } });
+                        return;
+                    case "get_status":
+                        safeSendGeneric(ws, {
+                            type: "status",
+                            data: { connectedClients: connections.size, sessions: sessions.size, uptime: process.uptime() }
+                        });
+                        return;
+                }
+            }
+
+            // op-protocol
+            const msg: ClientMsg = raw;
+            if ((msg as any).op === "ping") { safeSend(ws, { op: "pong" } as any); return; }
+
+            if (subscribeSchema.safeParse(msg).success) {
+                void handleSubscribe(ws, msg, deps);
+                return;
+            }
+
+            if (unsubscribeSchema.safeParse(msg).success) {
+                handleUnsubscribe(ws, msg, deps);
+                return;
+            }
+
+            // NEW: generic RPC
+            if (rpcSchema.safeParse(msg).success) {
+                void handleRpc(ws, msg as any, deps);
+                return;
+            }
+
+            safeSend(ws, { op: "error", code: "bad_op", message: "unknown message" } as any);
+        },
+
+        drain: (ws) => {
+            const s = sessions.get((ws as any).id);
+            if (!s) return;
+
+            if ((s as any)._slow) {
+                (s as any)._slow = false;
+                if ((SLOW_SOCKETS ) > 0) markFast();
+            }
+
+            while (s.sendQueue.length) {
+                const next = s.sendQueue.shift()!;
+                const ok = ws.send(next);
+                if (!ok) { s.sendQueue.unshift(next); break; }
+            }
+        },
+
+        pong: (_ws) => {},
+
+        close: (ws) => {
+            const id = (ws as any).id;
+            clearInterval((ws as any)._heartbeat);
+
+            const s = sessions.get(id);
+            if (s) {
+                for (const key of [...s.subs]) removeSub(s, key);
+                (s as any).subStates?.clear?.();
+
+                if ((s as any)._slow) {
+                    (s as any)._slow = false;
+                }
+                sessions.delete(s.id);
+                connections.delete(s.id);
+                broadcastAll({ type: "user_left", data: { userId: s.userId, connectionId: s.id } });
+                console.log("[ws] close", { id, userId: s.userId, tenantId: s.tenantId });
+            }
+        }
+    };
+}
+-------- [ Separator ] ------
+
+File Name: src/ws/io.ts
+Size: 1.25 KB
+Code:
+// src/ws/io.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type uWS from "uWebSockets.js";
+import { sessions } from "../state.js";
+import type { ServerMsg } from "../types.js";
+import {markSlow, SLOW_SOCKETS} from "../delivery.js";
+
+/**
+ * Send a JSON frame to a single WebSocket with backpressure handling.
+ *
+ * Why: uWS can signal a socket is backpressured (send returns false). We queue messages
+ * per-session and mark the session as "slow" to let the CDC flow-control pause if too
+ * many sockets are lagging. A hard cap prevents unbounded growth and forces clients to
+ * refresh via snapshot.
+ *
+ * How it fits: Used by handlers to send control frames (ack, error, snapshot metadata)
+ * and by fallback paths when binary diff delivery is not possible.
+ */
+export function safeSend(s: uWS.WebSocket<any>, msg: ServerMsg) {
+  const buf = JSON.stringify(msg);
+  const st = sessions.get((s as any).id);
+  if (!st) return;
+  const wrote = s.send(buf);
+  if (wrote) return;
+
+  (st as any).sendQueue.push(buf);
+  if (!(st as any)._slow) { (st as any)._slow = true; markSlow(); }
+  if ((st as any).sendQueue.length > 1000) {
+    (st as any).sendQueue.length = 0;
+    s.send(JSON.stringify({ op: "error", code: "overflow", message: "reset-to-snapshot" }));
+  }
+}
+
+-------- [ Separator ] ------
+
+File Name: src/ws/json-to-fb.ts
+Size: 2.37 KB
+Code:
+// src/ws/json-to-fb.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import * as flatbuffers from "flatbuffers";
+import { SqlSchema as sc } from "@cladbe/sql-protocol";
+import { orderSortFromWire, buildFilterValue, buildBasic, buildWrapper } from "../fb/builders.js";
+
+type Json = Record<string,any>;
+let S = sc.SqlSchema;
+
+export function encodeStreamingFilterJson(jsonSpec: Json): Buffer {
+  const b = new flatbuffers.Builder(1024);
+
+  const hashOff = b.createString(String(jsonSpec.hash ?? ""));
+
+  // order
+  const orderOffsets: number[] = [];
+  if (Array.isArray(jsonSpec.order)) {
+    for (const o of jsonSpec.order) {
+      const fieldOff = b.createString(String(o.field));
+      const sortEnum = orderSortFromWire(String(o.sort ?? "DESC_DEFAULT"));
+      S.OrderKeySpec.startOrderKeySpec(b);
+      S.OrderKeySpec.addField(b, fieldOff);
+      S.OrderKeySpec.addSort(b, sortEnum);
+      S.OrderKeySpec.addIsPk(b, !!o.is_pk);
+      orderOffsets.push(S.OrderKeySpec.endOrderKeySpec(b));
+    }
+  }
+  const orderVec = S.StreamingSqlDataFilter.createOrderVector(b, orderOffsets);
+
+  // cursor
+  const cursorOffsets: number[] = [];
+  if (Array.isArray(jsonSpec.cursor)) {
+    for (const c of jsonSpec.cursor) {
+      const fieldOff = b.createString(String(c.field));
+      const { type: valType, off: valOff } = buildFilterValue(b, c.value);
+      S.CursorEntry.startCursorEntry(b);
+      S.CursorEntry.addField(b, fieldOff);
+      S.CursorEntry.addValueType(b, valType);
+      S.CursorEntry.addValue(b, valOff);
+      cursorOffsets.push(S.CursorEntry.endCursorEntry(b));
+    }
+  }
+  const cursorVec = S.StreamingSqlDataFilter.createCursorVector(b, cursorOffsets);
+
+  // wrapper
+  const { off: wrapperOff, type} = (function () {
+    const off = buildWrapper(b, jsonSpec.wrapper);
+    return { off, type: S.BasicSqlDataFilterUnion.BasicSqlDataFilterWrapper };
+  })();
+
+  S.StreamingSqlDataFilter.startStreamingSqlDataFilter(b);
+  S.StreamingSqlDataFilter.addHash(b, hashOff);
+  S.StreamingSqlDataFilter.addWrapper(b, wrapperOff);
+  S.StreamingSqlDataFilter.addLimit(b, Number(jsonSpec.limit ?? 50));
+  S.StreamingSqlDataFilter.addOrder(b, orderVec);
+  S.StreamingSqlDataFilter.addCursor(b, cursorVec);
+  S.StreamingSqlDataFilter.addSchemaVersion(b, Number(jsonSpec.schema_version ?? 1));
+  const root = S.StreamingSqlDataFilter.endStreamingSqlDataFilter(b);
+
+  b.finish(root);
+  return Buffer.from(b.asUint8Array());
+}
+-------- [ Separator ] ------
+
+File Name: src/ws/rpc.ts
+Size: 6.72 KB
+Code:
+// src/ws/rpc.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type uWS from "uWebSockets.js";
+import { safeSend } from "./io.js";
+import type { WsDeps } from "./wire.js";
+
+/**
+ * Handle a generic WS RPC op by delegating to SqlRpcClient.
+ * Expects a message like:
+ *  {
+ *    op: "rpc",
+ *    method: "GET_SINGLE" | "GET_DATA" | ...,
+ *    companyId?: string,       // defaults to socket.tenantId
+ *    table?: string,           // required for table-scoped calls
+ *    correlationId?: string,   // echoed back
+ *    payload?: any             // method-specific
+ *  }
+ */
+export async function handleRpc(
+    ws: uWS.WebSocket<any>,
+    msg: {
+        op: "rpc";
+        method: string;
+        companyId?: string;
+        table?: string;
+        payload?: any;
+        correlationId?: string;
+    },
+    deps: WsDeps
+) {
+    const rpc = deps.sqlRpc;
+    if (!rpc) {
+        safeSend(ws, {
+            op: "rpcResult",
+            method: msg.method,
+            correlationId: msg.correlationId,
+            ok: false,
+            error: "SQL RPC client is not available",
+        } as any);
+        return;
+    }
+
+    const tenantId = (ws as any).tenantId || "demo";
+    const companyId = msg.companyId || tenantId;
+    const method = String(msg.method || "");
+    const table = msg.table || msg.payload?.tableName || msg.payload?.table || "";
+    const corr = msg.correlationId;
+
+    try {
+        let data: any;
+
+        switch (method) {
+            // -------------------- READS --------------------
+            case "GET_DATA": {
+                // Accept either: payload.queryJson (preferred) or legacy { limit, offset, wrapper/order/cursor }
+                const p = msg.payload || {};
+                if (typeof p.queryJson === "string" && p.queryJson.length > 0) {
+                    data = await rpc.getDataSnapshotWithQueryJson(companyId, table, p.queryJson);
+                } else if (p.wrapper || p.order || p.cursor || p.limit != null) {
+                    // Build a JSON spec from the loose fields if caller didn't pre-stringify
+                    const spec = {
+                        wrapper: p.wrapper,
+                        order: p.order,
+                        cursor: p.cursor,
+                        limit: p.limit,
+                        strict_after: p.strict_after ?? true,
+                    };
+                    data = await rpc.getDataSnapshotWithQueryJson(
+                        companyId,
+                        table,
+                        JSON.stringify(spec)
+                    );
+                } else {
+                    const limit = Number.isFinite(Number(p.limit)) ? Number(p.limit) : 500;
+                    const offset = Number.isFinite(Number(p.offset)) ? Number(p.offset) : 0;
+                    data = await rpc.getDataSnapshot(companyId, table, limit, offset);
+                }
+                break;
+            }
+
+            case "GET_SINGLE": {
+                const p = msg.payload || {};
+                data = await rpc.getSingle(
+                    companyId,
+                    table,
+                    String(p.primaryKeyColumn || p.primary_key_column || "id"),
+                    String(p.primaryId ?? p.primary_id ?? "")
+                );
+                break;
+            }
+
+            // -------------------- WRITES --------------------
+            case "ADD_SINGLE": {
+                const p = msg.payload || {};
+                data = await rpc.addSingle(
+                    companyId,
+                    table,
+                    String(p.primaryKeyColumn || p.primary_key_column || "id"),
+                    (p.row || p.row_json || p.data || p.rowJson || p.row_json_parsed) ??
+                    (typeof p.row_json === "string" ? JSON.parse(p.row_json) : {})
+                );
+                break;
+            }
+
+            case "UPDATE_SINGLE": {
+                const p = msg.payload || {};
+                const updates =
+                    p.updates ??
+                    p.updates_json ??
+                    (typeof p.updates_json === "string" ? JSON.parse(p.updates_json) : {});
+                data = await rpc.updateSingle(
+                    companyId,
+                    table,
+                    String(p.primaryKeyColumn || p.primary_key_column || "id"),
+                    String(p.primaryId ?? p.primary_id ?? ""),
+                    updates
+                );
+                break;
+            }
+
+            case "DELETE_ROW": {
+                const p = msg.payload || {};
+                data = await rpc.deleteRow(
+                    companyId,
+                    table,
+                    String(p.primaryKeyColumn || p.primary_key_column || "id"),
+                    String(p.primaryId ?? p.primary_id ?? "")
+                );
+                break;
+            }
+
+            // -------------------- DDL / META --------------------
+            case "CREATE_TABLE": {
+                const p = msg.payload || {};
+                const def =
+                    p.definition ??
+                    (typeof p.definition_json === "string" ? JSON.parse(p.definition_json) : p.definition_json);
+                data = await rpc.createTable(companyId, def);
+                break;
+            }
+
+            case "TABLE_EXISTS": {
+                data = await rpc.tableExists(companyId, table);
+                break;
+            }
+
+            // -------------------- AGGREGATION --------------------
+            case "RUN_AGGREGATION": {
+                const p = msg.payload || {};
+                data = await rpc.runAggregation({
+                    companyId,
+                    tableName: table,
+                    countEnabled: !!p.countEnabled || !!p.count_enabled,
+                    sumFields: p.sumFields ?? p.sum_fields,
+                    averageFields: p.averageFields ?? p.average_fields,
+                    minimumFields: p.minimumFields ?? p.minimum_fields,
+                    maximumFields: p.maximumFields ?? p.maximum_fields,
+                    wrapper: p.wrapper, // client wrapper JSON (filter_wrapper_type/filters)
+                });
+                break;
+            }
+
+            default: {
+                safeSend(ws, {
+                    op: "rpcResult",
+                    method,
+                    correlationId: corr,
+                    ok: false,
+                    error: `Unknown RPC method: ${method}`,
+                } as any);
+                return;
+            }
+        }
+
+        safeSend(ws, {
+            op: "rpcResult",
+            method,
+            correlationId: corr,
+            ok: true,
+            data,
+        } as any);
+    } catch (err: any) {
+        safeSend(ws, {
+            op: "rpcResult",
+            method,
+            correlationId: corr,
+            ok: false,
+            error: String(err?.message || err),
+        } as any);
+    }
+}
+-------- [ Separator ] ------
+
+File Name: src/ws/schemas.ts
+Size: 933 B
+Code:
+import { z } from "zod";
+
+export const subscribeSchema = z.object({
+    op: z.literal("subscribe"),
+    table: z.string().min(1),
+    hashId: z.string().min(1),
+    // accept either a FlatBuffer b64 OR a JSON string (we’ll convert it server-side)
+    queryFbB64: z.string().min(1).optional(),
+    queryJson: z.string().min(1).optional(),
+    resumeFromVersion: z.number().int().nonnegative().optional(),
+}).refine(s => !!s.queryFbB64 || !!s.queryJson, {
+    message: "Either queryFbB64 or queryJson must be provided",
+});
+
+export const unsubscribeSchema = z.object({
+    op: z.literal("unsubscribe"),
+    table: z.string().min(1),
+    hashId: z.string().min(1),
+});
+
+export const rpcSchema = z.object({
+    op: z.literal("rpc"),
+    method: z.string().min(1), // e.g. "GET_SINGLE"
+    companyId: z.string().optional(),
+    table: z.string().optional(),
+    payload: z.any().optional(),
+    correlationId: z.string().optional(),
+});
+-------- [ Separator ] ------
+
+File Name: src/ws/subscribe.ts
+Size: 5.21 KB
+Code:
+// src/ws/subscribe.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type uWS from "uWebSockets.js";
+import { sessions, addSub, removeSub } from "../state.js";
+import { type ClientMsg } from "../types.js";
+import { LAST_SEEN_LSN, type SubState } from "../lsn.js";
+import { deliverBinaryLSN } from "../delivery.js";
+import { HotCache } from "../keydb.js";
+import { safeSend } from "./io.js";
+import type { WsDeps } from "./wire.js";
+import { encodeStreamingFilterJson } from "./json-to-fb.js";
+
+const hotCache = new HotCache();
+
+/**
+ * Handle a subscribe op from a client.
+ *
+ * Flow:
+ * - Ack + publish query meta (fb) to Streams (qmeta topic) using the full routingKey.
+ * - Compute subscribe-time LSN fence (max of LAST_SEEN_LSN and resumeFromVersion).
+ * - Buffer live diffs while snapshot is fetched.
+ * - Send snapshot, flush buffered diffs strictly-after fence.
+ * - Optional: publish range index.
+ * - Replay persisted diffs from KeyDB strictly-after fence.
+ */
+export async function handleSubscribe(
+  ws: uWS.WebSocket<any>,
+  msg: ClientMsg,
+  deps: WsDeps
+) {
+  const { table, hashId, resumeFromVersion, queryFbB64, queryJson } = (msg as any);
+  const id = (ws as any).id;
+  const s  = sessions.get(id)!;
+
+  // Fully-qualified routing key for EVERYTHING downstream (Streams, cache, fan-out)
+  const routingKey = `${s.tenantId}_${table}|${hashId}`;
+
+  // Track this subscription by routingKey (so it matches CDC/KeyDB/Streams)
+  addSub(s, routingKey);
+  safeSend(ws, { op: "ack", hashId } as any);
+
+  // --- Publish qmeta (build from JSON if provided, else use FB b64) ---
+  try {
+    let buf: Buffer | null = null;
+    if (typeof queryJson === "string" && queryJson.length > 0) {
+      buf = encodeStreamingFilterJson(JSON.parse(queryJson));
+    } else if (typeof queryFbB64 === "string" && queryFbB64.length > 0) {
+      buf = Buffer.from(queryFbB64, "base64");
+    }
+    if (buf) deps.publishQueryMeta?.(routingKey, buf);
+  } catch (e) {
+    console.warn("[ws] invalid query payload", { table, hashId, err: String((e as any)?.message || e) });
+  }
+
+  // --- LSN fence (subscribe watermark) ---
+  let fence = LAST_SEEN_LSN;
+  if (typeof resumeFromVersion === "number" && Number.isFinite(resumeFromVersion)) {
+    const r = BigInt(resumeFromVersion);
+    if (r > fence) fence = r;
+  }
+
+  (s as any).subStates.set(routingKey, { cursorLsn: fence, buffering: true, buffer: [] } as SubState);
+
+  console.log("[ws] subscribe", {
+    id, tenant: s.tenantId, table, hashId,
+    resumeFrom: resumeFromVersion ?? 0,
+    fenceLSN: fence.toString(),
+    routingKey
+  });
+
+  try {
+    // 1) Snapshot (KeyDB-first via deps.getSnapshot)
+    const snap = await deps.getSnapshot(s.tenantId || "demo", table, hashId, fence.toString(), {
+      fbB64: queryFbB64,
+      json:  queryJson
+    });
+    const rows   = snap.rows   || [];
+    const cursor = snap.cursor || { lsn: fence.toString() };
+
+    safeSend(ws, { op: "snapshot", hashId, version: 0, cursor, rows } as any);
+
+    // 1b) Optional range index
+    try {
+      let range: string[] | undefined;
+      if (typeof (deps as any).getRangeIndex === "function") {
+        range = await (deps as any).getRangeIndex(s.tenantId || "demo", table, hashId);
+      } else if (typeof (hotCache as any).range === "function") {
+        range = await (hotCache as any).range(routingKey);
+      }
+      if (Array.isArray(range) && range.length) {
+        safeSend(ws, { op: "rangeIndex", hashId, pks: range } as any);
+      }
+    } catch (e) {
+      console.warn("[ws] rangeIndex fetch failed", { hashId, err: String((e as any)?.message || e) });
+    }
+
+    // 2) Flush buffered diffs strictly-after fence
+    const sub = (s as any).subStates.get(routingKey) as SubState | undefined;
+    if (sub) {
+      sub.buffer.sort((a, b) => (a.lsn < b.lsn ? -1 : a.lsn > b.lsn ? 1 : 0));
+      for (const m of sub.buffer) {
+        if (m.lsn > sub.cursorLsn) {
+          deliverBinaryLSN(routingKey, m.payload, m.lsn, s);
+          sub.cursorLsn = m.lsn;
+        }
+      }
+      sub.buffer = [];
+      sub.buffering = false;
+    }
+
+    // 3) Replay persisted diffs from KeyDB strictly AFTER the fence
+    try {
+      const diffs = await hotCache.diffsAfter(routingKey, fence);
+      const st = (s as any).subStates.get(routingKey) as SubState | undefined;
+      for (const d of diffs) {
+        const lsn = BigInt(d.lsn);
+        if (st && lsn <= st.cursorLsn) continue;
+        safeSend(ws, { op: "diffB64", hashId, b64: d.b64 } as any);
+        if (st) st.cursorLsn = lsn;
+      }
+    } catch {
+      // cache miss — ok
+    }
+  } catch (err: any) {
+    console.error("[ws] snapshot FAILED", {
+      id, table, message: err?.message, err
+    });
+    safeSend(ws, { op: "error", code: "snapshot_failed", message: String(err?.message || err) } as any);
+  }
+}
+
+/** Unsubscribe: remove state and clear qmeta */
+export function handleUnsubscribe(
+  ws: uWS.WebSocket<any>,
+  msg: ClientMsg,
+  deps: WsDeps
+) {
+  const { table, hashId } = (msg as any);
+  const id = (ws as any).id;
+  const s  = sessions.get(id)!;
+  const routingKey = `${s.tenantId}_${table}|${hashId}`;
+
+  removeSub(s, routingKey);
+  (s as any).subStates?.delete(routingKey);
+  console.log("[ws] unsubscribe", { id, table, hashId, routingKey });
+
+  try { deps.publishQueryMeta?.(routingKey, null); } catch { /* no-op */ }
+}
+-------- [ Separator ] ------
+
+File Name: src/ws/wire.ts
+Size: 1.02 KB
+Code:
+// src/ws/wire.ts
+/* eslint-disable @typescript-eslint/no-explicit-any */
+import type { SqlRpcClient } from "../rpc/sql-rpc.js";
+
+/**
+ * Dependencies provided to the WebSocket layer (handlers/app).
+ */
+export interface WsDeps {
+    /** Publish/clear query meta to Streams (FB bytes or null). */
+    publishQueryMeta?: (routingKey: string, fb: Buffer | null) => void;
+
+    /** Snapshot from KeyDB (or service in front of it). */
+    getSnapshot: (
+        companyId: string,
+        table: string,
+        hashId: string,
+        fenceLsn: string,
+        query?: { fbB64?: string; json?: string }
+    ) => Promise<{ rows: any[]; cursor: { lsn: string } }>;
+
+    /**
+     * OPTIONAL: Return the ordered PK list for the current page.
+     * If omitted, subscribe.ts will fall back to HotCache.range(hashId).
+     */
+    getRangeIndex?: (
+        companyId: string,
+        table: string,
+        hashId: string
+    ) => Promise<string[] | undefined>;
+
+    /** SqlRpc client — used by the generic "rpc" WebSocket op. */
+    sqlRpc?: SqlRpcClient;
+}
+-------- [ Separator ] ------
